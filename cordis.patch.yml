@@ -1,0 +1,8 @@
+# dsh-command-context bundle patch.
+#
+# 单个宿主插件：在全局 human-command registry 里注册 /context。
+# 命令是只读的——每次调用时从 ctx.sessions 取会话、从 ctx.tokenMeter 折叠出
+# 当前 token 压力，不写会话日志，也不触碰模型调用链路。
+- insert:
+    - id: dsh-command-context
+      name: dsh-command-context

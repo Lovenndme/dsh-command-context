@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Context Command",
+    "description": "Adds /context: shows how much of the current session's context window is used, how much is free, and which part of the prompt takes the most room."
+  }
+}
