@@ -24,6 +24,8 @@ Compaction trigger: ~800.0k tokens (80.0%), 546.7k headroom
 
 （示意数据。`measured` 表示主数字来自可复用的 provider 实测用量，`estimated` 表示回落到字符启发式。）
 
+结果卡片**默认展开**。命令结果默认落在内置的折叠卡片里、要点一下才展开；本插件的客户端半区只接管 `context` 这一条命令的 keyed slot（`conversation.chat.commandview`），所以报告直接铺开。其他命令仍是内置卡片；没有聊天界面的组合下，宿主半区照常工作、走内置卡片。
+
 ## 安装
 
 ```sh

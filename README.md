@@ -28,6 +28,12 @@ Compaction trigger: ~800.0k tokens (80.0%), 546.7k headroom
 Illustrative numbers. `measured` means the headline figure came from reusable provider
 usage; `estimated` means it fell back to the character heuristic.
 
+The card renders **expanded by default**. A command result normally lands in the generic
+collapsed card that needs a click to open; this plugin's client half takes over the keyed
+client slot `conversation.chat.commandview` for the `context` command only, so the report
+is simply visible. Every other command keeps the built-in card. In a composition without a
+chat UI the host half still works and the generic card is used.
+
 ## Install
 
 ```sh

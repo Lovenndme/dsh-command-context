@@ -1,17 +1,19 @@
 {
   "name": "dsh-command-context",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A /context slash command for DeepSeek Harness: shows how much of the current session's context window is used, how much is free, and a per-category breakdown of what fills it.",
   "type": "module",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -50,11 +52,17 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "slots"
+      ]
+    },
     "compatibility": {
       "dshReleases": {
         "0.2.1-rc.5": "verified"
       },
-      "note": "Host-only bundle. Uses ctx.commands.register, ctx.sessions.get, ctx.tokenMeter.measure, and Session.requestContext/requestHeader/eventAt. On a host without those services the plugin fails to load instead of printing wrong numbers."
+      "note": "Host half uses ctx.commands.register, ctx.sessions.get, ctx.tokenMeter.measure and Session.requestContext/requestHeader/eventAt; on a host without those services the plugin fails to load instead of printing wrong numbers. Client half occupies the keyed slot conversation.chat.commandview under key 'context' so the report renders expanded; without that slot the generic collapsed card is used."
     }
   }
 }

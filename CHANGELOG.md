@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-01
+
+### Added
+
+- Client half: the report now renders **expanded by default** instead of inside the
+  generic collapsed command card, so no click is needed to read it. It occupies the keyed
+  client slot `conversation.chat.commandview` under key `context`, the documented
+  per-command renderer seam; every other command keeps the built-in card.
+- The card uses only public theme tokens (`--dsw-alias-bg-layer-1`,
+  `--dsw-alias-border-l1`, `--dsw-alias-label-primary`, `--dsw-alias-label-secondary`,
+  `--dsw-alias-state-error-primary`), so it follows light and dark themes.
+
+### Notes
+
+- The host half is unchanged. A composition without the chat UI keeps the generic card.
+
 ## [0.1.0] - 2026-11-01
 
 First public release.
