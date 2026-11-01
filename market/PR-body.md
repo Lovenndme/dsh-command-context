@@ -39,6 +39,10 @@ vs. skills) instead of guessing.
 - **Read-only.** It appends no session events, triggers no model call, and mutates no
   session state. It reads documented host services only (`ctx.commands`,
   `ctx.sessions`, `ctx.tokenMeter`).
+- **One client-side touch, scoped to itself.** The client half occupies the keyed slot
+  `conversation.chat.commandview` under key `context` so the report opens expanded
+  instead of inside the generic collapsed card. It touches no other command and uses only
+  public theme tokens. A composition without the chat UI still works via the host half.
 - **Host-only.** No client half, no extra services to compose beyond the plugin row.
 - **Requirements:** `@deepseek-ai/dsh` `>=0.2.1-rc.5 <0.3.0-0`.
 - **License:** MIT.
