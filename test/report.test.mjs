@@ -78,7 +78,7 @@ assert.match(report, /^\[#{4}-{16}\]  /m, 'bar should be 4 filled of 20 for 19.3
 assert.match(report, /Free space: 806\.8k tokens \(80\.7%\)/)
 
 // 2) 六类齐全：memory / skills 必须从用户消息里拆出来
-assert.match(report, /By message type \(sum 180\.0k tokens\)/)
+assert.match(report, /By category \(sum 180\.0k tokens\)/)
 for (const label of [
   'System prompt',
   'Memory files',
@@ -92,6 +92,18 @@ for (const label of [
 assert.match(report, /Memory files +1\.5k +\(0\.8%\)/)
 assert.match(report, /Skills +1\.5k +\(0\.8%\)/)
 assert.match(report, /User messages +3\.2k +\(1\.8%\)/)
+
+// 2b) 工具定义：给了 toolsTokens 就多一行，且分母变成「节点合计 + 工具定义」
+assert.ok(!report.includes('Tool definitions'), 'no toolsTokens means no tools row')
+const withTools = buildReport(fakeSession(), measurement, { toolsTokens: 98_400 })
+console.log(withTools)
+assert.match(withTools, /By category \(sum 278\.4k tokens\)/)
+assert.match(withTools, /Tool definitions +98\.4k +\(35\.3%\)/)
+assert.match(withTools, /System prompt +12\.4k +\(4\.5%\)/, 'shares must use the combined denominator')
+assert.ok(
+  withTools.indexOf('Tool results') < withTools.indexOf('Tool definitions'),
+  'tools row belongs after the node rows',
+)
 
 // 3) 混排消息不算注入：只要有一条块不是 reminder，整条按用户消息算
 events.set(7, event('user/message', 'normal text\n<system-reminder>tail</system-reminder>'))

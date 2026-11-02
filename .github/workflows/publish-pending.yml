@@ -1,0 +1,77 @@
+name: Publish when a version bump is pending
+
+# Releases are batched: a normal change lands as test + version bump + CHANGELOG + commit, and this
+# workflow (not the developer's machine) does the npm publish. Running here means a release still
+# happens while the developer's computer is off.
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      # Only publish when package.json is ahead of npm's latest; otherwise exit quietly.
+      - name: Is there anything to publish?
+        id: gate
+        run: |
+          pkg="$(node -p "require('./package.json').name")"
+          local="$(node -p "require('./package.json').version")"
+          latest="$(npm view "$pkg" version 2>/dev/null || echo 0.0.0)"
+          echo "package=$pkg local=$local latest=$latest"
+          if node -e '
+            const cmp = (x, y) => {
+              const a = x.split("-")[0].split(".").map(Number)
+              const b = y.split("-")[0].split(".").map(Number)
+              for (let i = 0; i < 3; i += 1) {
+                const p = a[i] || 0
+                const q = b[i] || 0
+                if (p !== q) return p > q ? 1 : -1
+              }
+              return 0
+            }
+            process.exit(cmp(process.argv[1], process.argv[2]) > 0 ? 0 : 1)
+          ' "$local" "$latest"; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            echo "没有待发布版本，跳过"
+          fi
+
+      - name: Syntax check and tests
+        if: steps.gate.outputs.pending == 'true'
+        run: |
+          node --check index.js
+          node --check client.js
+          node test/report.test.mjs
+
+      - name: Publish
+        if: steps.gate.outputs.pending == 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Wait for the registry to serve the new version
+        if: steps.gate.outputs.pending == 'true'
+        run: |
+          pkg="$(node -p "require('./package.json').name")"
+          local="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 10); do
+            sleep 20
+            live="$(npm view "$pkg" version)"
+            echo "attempt=$attempt registry=$live"
+            if [ "$live" = "$local" ]; then exit 0; fi
+          done
+          echo "published but the registry still serves an older version"
+          exit 1

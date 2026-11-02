@@ -14,13 +14,14 @@ Context: deepseek-v4.1-flash (myapi)
 [#####---------------]  253.3k / 1.00M tokens (25.3%)  measured
 Free space: 746.7k tokens (74.7%)
 
-By message type (sum 120.1k tokens)
-  System prompt        2.1k  (1.8%)
-  Memory files       369.0  (0.3%)
-  Skills               1.1k  (0.9%)
-  User messages        7.9k  (6.6%)
-  Assistant replies   39.1k  (32.5%)
-  Tool results        69.5k  (57.8%)
+By category (sum 218.5k tokens)
+  System prompt        2.1k  (1.0%)
+  Memory files       369.0  (0.2%)
+  Skills               1.1k  (0.5%)
+  User messages        7.9k  (3.6%)
+  Assistant replies   39.1k  (17.9%)
+  Tool results        69.5k  (31.8%)
+  Tool definitions    98.4k  (45.0%)
 
 Compaction trigger: ~800.0k tokens (80.0%), 546.7k headroom
 ```
@@ -85,7 +86,8 @@ misattributing text the user actually wrote.
 | Used / pressure | `ctx.tokenMeter.measure(session).totalTokens` — replays the durable session log, no model call |
 | Context capacity | `session.requestContext().contextWindow` (the `request/context` record) |
 | Free space | capacity − pressure |
-| Breakdown | `measure().nodes`, classified per node; denominator is `surfaceTokens` (= the sum of those nodes) |
+| Breakdown | `measure().nodes`, classified per node; the sum is `surfaceTokens` (= the sum of those nodes) plus `Tool definitions` when present |
+| Tool definitions | `toolsTokens` from the `ctx.sessionProjections` unit `contextBreakdown` |
 | Compaction trigger | `min(W * 0.8, W - maxTokens - 65536)`, the shipped `compaction-basic` defaults |
 
 Occupancy follows the `@deepseek-ai/dsh-token-meter` definition verbatim: **measured
@@ -117,11 +119,13 @@ metadata ships in both languages via `locale/en.json` and `locale/zh.json`.
 
 - **An estimate, not a bill.** The headline is measured only when reusable provider usage
   exists. The breakdown is always per-message route pricing, so it is a different scale
-  from the headline and will not sum to it — the `By message type` line prints the node
-  total so the two can be compared.
-- **Tool schemas have no line of their own** because they are not surface nodes. Exposing
-  them requires reading the `contextBreakdown` projection (`systemTokens` / `toolsTokens` /
-  `messageTokens`); this version does not.
+  from the headline and will not sum to it — the `By category` line prints the sum so the
+  two can be compared.
+- **`Tool definitions` comes from a different estimator than the rows above it.** It is
+  `toolsTokens` from the `contextBreakdown` projection (the harness's own tool-schema
+  pricing, four-characters-per-token based) rather than a per-message route price. When that
+  projection is unavailable the row is omitted rather than estimated separately, which is
+  also when the sum drops back to the node total.
 - **`Compaction trigger` describes the default policy's threshold** and does not assert that
   automatic compaction is enabled in your composition.
 - **No capacity, no percentage.** A session with no `request/context` record yet reports the

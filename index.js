@@ -189,7 +189,7 @@ function summariseNodes(session, nodes) {
  *
  * 纯函数（除了只读的 `session` 查询），便于离线用合成数据验证格式。
  */
-export function buildReport(session, measurement) {
+export function buildReport(session, measurement, options = {}) {
   const context = session.requestContext()
   const header = session.requestHeader()
   const model = context?.model ?? header?.config?.model ?? 'unknown model'
@@ -219,24 +219,29 @@ export function buildReport(session, measurement) {
   }
 
   // ── 分类明细 ────────────────────────────────────────────────────────
-  // 节点合计就是 surfaceTokens（token-meter 的契约）；百分比一律以它为分母，
-  // 不拿「总占用 − 节点合计」当某个类别——那个差额没有对应的节点，硬算就是编数。
+  // 节点合计就是 surfaceTokens（token-meter 的契约）；工具定义不是表面节点，
+  // 单独取 token-meter 的 contextBreakdown.toolsTokens。有它时分母改成
+  // 「节点合计 + 工具定义」，整张表仍然只用一个分母。
   const totals = summariseNodes(session, measurement.nodes)
   const rows = CATEGORY_ORDER.filter((key) => (totals.get(key) ?? 0) > 0).map((key) => ({
     label: CATEGORY_LABELS[key],
     tokens: totals.get(key),
   }))
 
+  const toolsTokens =
+    Number.isFinite(options.toolsTokens) && options.toolsTokens > 0 ? options.toolsTokens : 0
+  if (toolsTokens > 0) rows.push({ label: 'Tool definitions', tokens: toolsTokens })
+
   if (rows.length > 0) {
+    const denominator = surface + toolsTokens
+    const share = denominator > 0 ? denominator : 1
     lines.push('')
-    lines.push(`By message type (sum ${formatTokens(surface)} tokens)`)
+    lines.push(`By category (sum ${formatTokens(denominator)} tokens)`)
     const labelWidth = Math.max(...rows.map((row) => row.label.length))
     const tokenWidth = Math.max(...rows.map((row) => formatTokens(row.tokens).length))
-    const denominator = surface > 0 ? surface : 1
     for (const row of rows) {
-      const share = formatPercent(row.tokens / denominator)
       lines.push(
-        `  ${row.label.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(tokenWidth)}  (${share})`,
+        `  ${row.label.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(tokenWidth)}  (${formatPercent(row.tokens / share)})`,
       )
     }
   }
@@ -266,6 +271,27 @@ export function buildReport(session, measurement) {
 
 /* ------------------------------------------------------------------ 命令 */
 
+/**
+ * 取工具定义（tool schema）占多少 token。
+ *
+ * 来源是 `tokenMeter` 注册的 `contextBreakdown` 投影——文档明确它有
+ * `systemTokens` / `toolsTokens` / `messageTokens`，且 `toolsTokens` 跟随最新的
+ * `request/header`。这是唯一"和 harness 同口径"的来源；自己按字符数估一个数
+ * 只会得到另一套刻度，所以投影读不到时就返回 undefined，报告里干脆不显示这一行。
+ */
+function readToolsTokens(ctx, session) {
+  const projections = typeof ctx.get === 'function' ? ctx.get('sessionProjections') : undefined
+  if (!projections || typeof projections.snapshot !== 'function') return undefined
+
+  try {
+    const snapshot = projections.snapshot(session, ['contextBreakdown'])
+    const tokens = snapshot?.values?.contextBreakdown?.toolsTokens
+    return Number.isFinite(tokens) && tokens > 0 ? tokens : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** 执行一次 `/context`：只读测量，永不改动会话。 */
 function executeContext(ctx, invocation) {
   if (invocation.rawInput.trim().length > 0) return { kind: 'error', text: USAGE }
@@ -283,7 +309,10 @@ function executeContext(ctx, invocation) {
     return { kind: 'error', text: `Could not measure context usage: ${detail}` }
   }
 
-  return { kind: 'success', text: buildReport(session, measurement) }
+  return {
+    kind: 'success',
+    text: buildReport(session, measurement, { toolsTokens: readToolsTokens(ctx, session) }),
+  }
 }
 
 /**

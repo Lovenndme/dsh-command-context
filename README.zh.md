@@ -11,13 +11,14 @@ Context: deepseek-v4.1-flash (myapi)
 [#####---------------]  253.3k / 1.00M tokens (25.3%)  measured
 Free space: 746.7k tokens (74.7%)
 
-By message type (sum 120.1k tokens)
-  System prompt        2.1k  (1.8%)
-  Memory files       369.0  (0.3%)
-  Skills               1.1k  (0.9%)
-  User messages        7.9k  (6.6%)
-  Assistant replies   39.1k  (32.5%)
-  Tool results        69.5k  (57.8%)
+By category (sum 218.5k tokens)
+  System prompt        2.1k  (1.0%)
+  Memory files       369.0  (0.2%)
+  Skills               1.1k  (0.5%)
+  User messages        7.9k  (3.6%)
+  Assistant replies   39.1k  (17.9%)
+  Tool results        69.5k  (31.8%)
+  Tool definitions    98.4k  (45.0%)
 
 Compaction trigger: ~800.0k tokens (80.0%), 546.7k headroom
 ```
@@ -68,7 +69,8 @@ dsh plugin --profile <profile> add dsh-command-context
 | 已用 / 总占用 | `ctx.tokenMeter.measure(session).totalTokens`（回放会话日志折叠，无模型调用） |
 | 上下文上限 | `session.requestContext().contextWindow`（`request/context` 事件） |
 | 剩余空间 | 上限 − 总占用 |
-| 分类明细 | `measure().nodes` 逐个按节点归类，分母是 `surfaceTokens`（= 各节点之和） |
+| 分类明细 | `measure().nodes` 逐个按节点归类，合计是 `surfaceTokens`（= 各节点之和）加上有值时的 `Tool definitions` |
+| 工具定义 | `ctx.sessionProjections` 的 `contextBreakdown` 投影里的 `toolsTokens` |
 | 压缩触发点 | `min(W × 0.8, W − maxTokens − 65536)`，即 `compaction-basic` 的默认策略 |
 
 占用率口径照 `@deepseek-ai/dsh-token-meter` README 的原话：**实测压力 ÷ 该路由的模型上下文容量**。
@@ -86,7 +88,7 @@ dsh plugin --profile <profile> add dsh-command-context
 ## 已知限制
 
 - **是估算，不是账单。** 只有 `measured` 时主数字才是实测；分类明细始终是各消息的路由定价，与主数字不同源、不会相等——`By message type` 那行给出节点合计，便于对照。
-- **工具定义（tool schema）没有单独一行**，因为它不属于表面节点。要单独看它需要读 `contextBreakdown` 投影（`systemTokens` / `toolsTokens` / `messageTokens`），本版未接。
+- **`Tool definitions` 和上面几行的估算口径不同**：它取的是 `contextBreakdown` 投影里的 `toolsTokens`（harness 自己对 tool schema 的 4 字符/token 计价），不是逐消息的路由定价。读不到这个投影时这一行不显示，而不是另估一个数——那时合计也会回落到节点合计。
 - **`Compaction trigger` 只陈述默认策略下的触发点**，不代表你的组合里自动压缩已启用。
 - **没有上限就不给比例**：会话还没有 `request/context` 记录时，只报已用量并明确说明无法换算。
 - 只覆盖当前会话，不含子代理会话。

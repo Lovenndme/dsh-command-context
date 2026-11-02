@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-02
+
+### Added
+
+- `Tool definitions` row: the token cost of the tool schemas the model is sent, read from
+  the `tokenMeter` `contextBreakdown` projection (`toolsTokens`) rather than estimated
+  locally. When that projection is unavailable the row is omitted instead of guessed.
+- With the row present the table's sum becomes surface nodes + tool definitions, so every
+  row shares one denominator.
+
+### Changed
+
+- Section title `By message type` → `By category`, since tool definitions are not a message
+  type.
+
 ## [0.2.0] - 2026-11-01
 
 ### Added
