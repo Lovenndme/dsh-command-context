@@ -59,7 +59,7 @@ function stampLoad() {
   }
 }
 
-const USAGE = 'Usage: /context [top [N]]'
+const USAGE = 'Usage: /context [top] [N]'
 
 /** compaction-basic 的默认策略常量：读不到真实策略时才用，并在行上标注。 */
 const DEFAULT_THRESHOLD_RATIO = 0.8
@@ -410,17 +410,29 @@ function buildLargestNodes(session, nodes, limit) {
 
 /**
  * 解析 `/context` 的参数。
- * 空 → 只出报告；`top` / `top N` → 报告 + 最大节点。其它一律 undefined（回 Usage）。
+ *
+ *   空        → 只出报告
+ *   `N`       → 报告 + 最大的 N 个节点（`top N` 的简写：`/context 3` 是人第一反应）
+ *   `top`     → 报告 + 最大的 5 个节点
+ *   `top N`   → 报告 + 最大的 N 个节点
+ *
+ * 其它一律 undefined（回 Usage）。数字必须是纯数字：`top 3x` 不该被 parseInt 吃掉尾巴。
  */
 function parseRequest(rawInput) {
   const parts = rawInput.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return { mode: 'report' }
+
+  if (parts.length === 1 && /^\d+$/.test(parts[0])) {
+    const limit = Number.parseInt(parts[0], 10)
+    return limit > 0 ? { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT) } : undefined
+  }
+
   if (parts[0] !== 'top') return undefined
   if (parts.length > 2) return undefined
+  if (parts.length === 2 && !/^\d+$/.test(parts[1])) return undefined
 
   const limit = parts.length === 2 ? Number.parseInt(parts[1], 10) : DEFAULT_TOP_COUNT
-  if (!Number.isFinite(limit) || limit <= 0) return undefined
-  return { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT) }
+  return limit > 0 ? { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT) } : undefined
 }
 
 /** 执行一次 `/context`：只读测量，永不改动会话。 */

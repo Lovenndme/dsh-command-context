@@ -29,7 +29,7 @@ Compaction trigger (default policy): ~800.0k tokens (80.0%), 300.0k headroom
 ```
 
 `/context top [N]` appends the largest surface nodes — the answer to "what is actually
-eating my context":
+eating my context" (`/context 3` is accepted as a shorthand for `top 3`):
 
 ```
 Largest nodes

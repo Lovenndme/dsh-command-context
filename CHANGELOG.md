@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-02
+
+### Changed
+
+- A bare integer is accepted as shorthand for `top N`: `/context 3` now lists the three
+  largest nodes instead of answering with the usage line. `/context top 3` keeps working.
+- The `top N` argument must be all digits; `top 3x` is rejected instead of being silently
+  read as `3` by `parseInt`.
+
 ## [0.4.0] - 2026-11-02
 
 ### Added

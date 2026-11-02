@@ -217,10 +217,16 @@ assert.match(largestRows[1], /system +12\.4k/, 'non-tool nodes fall back to a ro
 const topDefault = run('top')
 assert.equal(topDefault.text.split('Largest nodes')[1].trim().split('\n').length, 5)
 
-for (const bad of ['bogus', 'top 0', 'top x', 'top 1 2']) {
+// 8b) 裸数字是 `top N` 的简写：`/context 3` 是人第一反应
+const shorthand = run('3')
+assert.equal(shorthand.kind, 'success')
+assert.equal(shorthand.text.split('Largest nodes')[1].trim().split('\n').length, 3)
+assert.equal(shorthand.text, run('top 3').text, 'bare N must equal top N')
+
+for (const bad of ['bogus', '0', 'top 0', 'top x', 'top 3x', 'top 1 2']) {
   const result = run(bad)
   assert.equal(result.kind, 'error', `"${bad}" must be rejected`)
-  assert.equal(result.text, 'Usage: /context [top [N]]')
+  assert.equal(result.text, 'Usage: /context [top] [N]')
 }
 
 // 9) 排版契约：纯 ASCII

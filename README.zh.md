@@ -25,7 +25,7 @@ By category (of 500.0k tokens)
 Compaction trigger (default policy): ~800.0k tokens (80.0%), 300.0k headroom
 ```
 
-`/context top [N]` 会额外列出最大的几个表面节点——「上下文到底被谁吃了」：
+`/context top [N]` 会额外列出最大的几个表面节点——「上下文到底被谁吃了」（`/context 3` 是 `top 3` 的简写）：
 
 ```
 Largest nodes
