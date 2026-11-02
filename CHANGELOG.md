@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.4 — 2026-11-02
+
+- ci: batch releases on a schedule, bump at publish time, and notify through a GitHub release
+- fix: also resolve compaction via agentPresets.serviceFor (0.4.3)
+- fix: declare command input so arguments reach the executor (0.4.2)
+- fix: accept a bare integer as shorthand for top N (0.4.1)
+- feat: unaccounted row, real compaction policy, /context top (0.4.0)
+- feat: report tool-definition cost; publish via scheduled CI (0.3.0)
+- docs: PR body no longer claims the plugin is host-only
+
+
 All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
