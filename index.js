@@ -122,6 +122,16 @@ const CATEGORY_LABELS = {
   unclassified: 'Unclassified nodes',
 }
 
+/**
+ * MCP 工具的名字带 `mcp__<server>__<tool>` 前缀，这是区分「内置工具」与「MCP 提供
+ * 的工具」唯一可靠的依据——不依赖某个具体 server 的配置。
+ */
+const MCP_TOOL_PREFIX = 'mcp__'
+
+function isMcpTool(name) {
+  return typeof name === 'string' && name.startsWith(MCP_TOOL_PREFIX)
+}
+
 /** 事件里的消息：`user/message` 的 data 本身就是消息，其余藏一层 `message`。 */
 function messageOf(event) {
   return event.type === 'user/message' ? event.data : event.data?.message
@@ -175,15 +185,54 @@ function classifyNode(event) {
  *
  * 节点只出现在会话表面的节点 seq 上，所以 `eventAt(seq)` 必然拿得到事件；
  * 拿不到时归入 unclassified（理论上不会发生，出现即说明表面与日志不一致）。
+ *
+ * 工具结果再按来源分一次：由 MCP 工具产生的单独记 'mcp'，和内置工具分开算。
+ * 分类依据是 callId → 工具名（`mcp__` 前缀），所以需要调用方把名字表传进来。
  */
-function summariseNodes(session, nodes) {
+function summariseNodes(session, nodes, toolNames = new Map()) {
   const totals = new Map()
   for (const node of nodes) {
     const event = session.eventAt(node.seq)
-    const key = event ? classifyNode(event) : 'unclassified'
+    let key = event ? classifyNode(event) : 'unclassified'
+    if (key === 'tool') {
+      const callId = event.data?.message?.source?.callId
+      const name = callId !== undefined ? toolNames.get(callId) : undefined
+      if (isMcpTool(name)) key = 'mcp'
+    }
     totals.set(key, (totals.get(key) ?? 0) + node.tokens)
   }
   return totals
+}
+
+/**
+ * 把「工具定义」按 MCP / 内置拆开。
+ *
+ * 手上只有 `contextBreakdown.toolsTokens` 一个总数，没有逐工具的实测价，所以按
+ * **声明体积占比**（`JSON.stringify(schema).length`）去分配这个总数：总量仍是那个
+ * 可信的数，拆分只是按比例分摊，不另造一个刻度。
+ */
+function splitToolDefinitions(session, toolsTokens) {
+  const tools = session.requestHeader()?.tools
+  if (!(toolsTokens > 0) || !Array.isArray(tools) || tools.length === 0) {
+    return { mcp: 0, rest: toolsTokens }
+  }
+
+  let mcpSize = 0
+  let totalSize = 0
+  for (const tool of tools) {
+    let size = 0
+    try {
+      size = JSON.stringify(tool).length
+    } catch {
+      size = 0
+    }
+    totalSize += size
+    if (isMcpTool(tool?.name)) mcpSize += size
+  }
+
+  if (totalSize === 0) return { mcp: 0, rest: toolsTokens }
+  const mcp = Math.round((toolsTokens * mcpSize) / totalSize)
+  return { mcp, rest: toolsTokens - mcp }
 }
 
 /* ------------------------------------------------------------------ 报告 */
@@ -229,7 +278,8 @@ export function buildReport(session, measurement, options = {}) {
   // 整张表只用一个分母：**provider 侧的总压力**。两套口径（实测压力 vs 逐消息
   // 路由定价）解释不掉的差额，落到 Unaccounted 行里如实暴露，而不是让读者自己
   // 去减——那样每个人算出来的都不一样，也没人知道差的是什么。
-  const totals = summariseNodes(session, measurement.nodes)
+  const toolNames = collectToolNames(session)
+  const totals = summariseNodes(session, measurement.nodes, toolNames)
   const rows = CATEGORY_ORDER.filter((key) => (totals.get(key) ?? 0) > 0).map((key) => ({
     label: CATEGORY_LABELS[key],
     tokens: totals.get(key),
@@ -237,7 +287,12 @@ export function buildReport(session, measurement, options = {}) {
 
   const toolsTokens =
     Number.isFinite(options.toolsTokens) && options.toolsTokens > 0 ? options.toolsTokens : 0
-  if (toolsTokens > 0) rows.push({ label: 'Tool definitions', tokens: toolsTokens })
+  const toolSplit = splitToolDefinitions(session, toolsTokens)
+  if (toolSplit.rest > 0) rows.push({ label: 'Tool definitions', tokens: toolSplit.rest })
+
+  // MCP 单独一类：它的工具结果（按节点定价）+ 它在工具定义里占的那一份（按声明体积分摊）。
+  const mcpTotal = (totals.get('mcp') ?? 0) + toolSplit.mcp
+  if (mcpTotal > 0) rows.push({ label: 'MCP', tokens: mcpTotal })
 
   if (rows.length > 0) {
     const itemized = rows.reduce((sum, row) => sum + row.tokens, 0)

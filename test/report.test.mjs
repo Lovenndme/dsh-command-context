@@ -121,6 +121,54 @@ assert.ok(
   'tools row belongs after the node rows',
 )
 
+// 2d) MCP：工具结果按 `mcp__` 前缀单独归类，工具定义按声明体积占比分摊
+const mcpEvents = new Map(events)
+mcpEvents.set(8, event('tool/call', null, { turn: 3, callId: 'c2', name: 'mcp__a__b', arguments: '{}' }))
+mcpEvents.set(
+  9,
+  event('tool/result', 'x', {
+    turn: 3,
+    message: { content: [{ type: 'text', text: 'x' }], source: { callId: 'c2' } },
+  }),
+)
+// 两个 schema 的 JSON 长度刻意相等 → MCP 占工具定义正好一半（49.2k / 49.2k）
+const balancedTools = [
+  { name: 'read', description: 'xxxxx', parameters: {} },
+  { name: 'mcp__a__b', description: '', parameters: {} },
+]
+assert.equal(
+  JSON.stringify(balancedTools[0]).length,
+  JSON.stringify(balancedTools[1]).length,
+  'fixture: schemas must be the same size so the MCP share is exactly half',
+)
+
+const mcpSession = {
+  ...fakeSession(),
+  requestHeader: () => ({ config: { maxTokens: 32768 }, tools: balancedTools }),
+  eventAt: (seq) => mcpEvents.get(seq),
+  snapshotEvents: () => [...mcpEvents.values()],
+}
+const mcpReport = buildReport(
+  mcpSession,
+  {
+    ...measurement,
+    totalTokens: 400_000,
+    surfaceTokens: 200_000,
+    nodes: [...NODES, { seq: 9, tokens: 20_000, heuristicTokens: 20_000 }],
+  },
+  { toolsTokens: 98_400, compaction: {} },
+)
+console.log(mcpReport)
+assert.ok(!report.includes('MCP'), 'no MCP tools means no MCP row')
+assert.match(mcpReport, /Tool results +153\.3k/, 'built-in results stay in Tool results')
+assert.match(mcpReport, /Tool definitions +49\.2k/, 'MCP definitions must leave Tool definitions')
+assert.match(mcpReport, /MCP +69\.2k/, 'MCP row = 20.0k results + 49.2k definitions')
+assert.match(mcpReport, /Unaccounted +101\.6k/) // 400.0k - 298.4k
+assert.ok(
+  mcpReport.indexOf('Tool definitions') < mcpReport.indexOf('MCP'),
+  'MCP row belongs after the tool rows',
+)
+
 // 3) 混排消息不算注入：只要有一条块不是 reminder，整条按用户消息算
 events.set(8, event('user/message', 'normal text\n<system-reminder>tail</system-reminder>', { turn: 3 }))
 const mixed = buildReport(
@@ -235,6 +283,7 @@ for (const bad of ['bogus', '0', 'top 0', 'top x', 'top 3x', 'top 1 2']) {
 for (const [what, text] of [
   ['main report', report],
   ['with tools', withTools],
+  ['with mcp', mcpReport],
   ['unknown-capacity report', unknown],
   ['over-trigger report', over],
   ['top output', topTwo.text],

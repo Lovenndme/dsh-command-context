@@ -72,6 +72,7 @@ dsh plugin --profile <profile> add dsh-command-context
 | `developer/message` | `Injected context` |
 | `assistant/message` | `Assistant replies` |
 | `tool/result` | `Tool results` |
+| 工具名以 `mcp__` 开头的 `tool/result` | `MCP` |
 
 关键点：**指令文件（如 `AGENTS.md`）和 skills 目录各自是一条独立的 `user/message`**，单块 `<system-reminder>`——既不是系统提示的一部分，也不是用户自己写的。不拆出来的话「用户消息」会被明显虚高，这正是本插件最早版本的错误。
 
@@ -85,7 +86,8 @@ dsh plugin --profile <profile> add dsh-command-context
 | 上下文上限 | `session.requestContext().contextWindow`（`request/context` 事件） |
 | 剩余空间 | 上限 − 总占用 |
 | 分类明细 | `measure().nodes` 逐个按节点归类 |
-| 工具定义 | `ctx.sessionProjections` 的 `contextBreakdown` 投影里的 `toolsTokens` |
+| 工具定义 | `ctx.sessionProjections` 的 `contextBreakdown` 投影里的 `toolsTokens`，减去 MCP 那一份 |
+| MCP | 由 `mcp__*` 工具产生的工具结果（按节点定价），加上上面工具定义里属于 MCP 的那一份（按声明的 schema 体积分摊） |
 | Unaccounted | 表头那个分母（实测压力）减去上面所有已归类的行 |
 | Largest nodes | `measure().nodes` 按 token 降序；工具结果用对应 `tool/call` 事件里的工具名标注 |
 | 压缩触发点 | `min(W × ratio, W − maxTokens − headroom)`：能读到压实后端自己的策略就用真实的，读不到才用 `compaction-basic` 默认值并标注 `(default policy)` |
@@ -108,6 +110,7 @@ dsh plugin --profile <profile> add dsh-command-context
 
 - **是估算，不是账单。** 只有 `measured` 时主数字才是实测；分类明细是路由定价/启发式，与主数字不同源——`Unaccounted` 就是这段差额，它不是一个类别，也不是算错了。主数字本身是启发式时（拿不到可复用的 provider 用量），整张表正好加平，`Unaccounted` 会消失。
 - **`Tool definitions` 和上面几行的估算口径不同**：它取的是 `contextBreakdown` 投影里的 `toolsTokens`（harness 自己对 tool schema 的计价），不是逐消息的路由定价。读不到这个投影时这一行不显示，那部分占比会落进 `Unaccounted`。
+- **`MCP` 里「工具定义」那一份是分摊的，不是实测的**：工具 schema 只有一个 `toolsTokens` 总数，MCP 那一份按声明的 schema 体积占比切分；`MCP` 里的**工具结果**部分是真实的逐节点定价。会话里没有 `mcp__*` 工具时整行不出现。
 - **`Compaction trigger` 读不到压实后端自己的策略时会标注 `(default policy)`**；两种情况都不代表你的组合里自动压缩已启用——完全找不到压实后端时，这一行整行不显示。
 - **没有上限就不给比例**：会话还没有 `request/context` 记录时，只报已用量并明确说明无法换算。
 - 只覆盖当前会话，不含子代理会话。

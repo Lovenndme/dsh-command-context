@@ -85,6 +85,7 @@ carries its own token price, so the command only has to decide which bucket it b
 | `developer/message` | `Injected context` |
 | `assistant/message` | `Assistant replies` |
 | `tool/result` | `Tool results` |
+| `tool/result` whose tool name starts with `mcp__` | `MCP` |
 
 The part that matters: **an instruction file (e.g. `AGENTS.md`) and the skills catalog each
 arrive as their own `user/message`** whose only block is a `<system-reminder>` — they are
@@ -104,7 +105,8 @@ misattributing text the user actually wrote.
 | Context capacity | `session.requestContext().contextWindow` (the `request/context` record) |
 | Free space | capacity − pressure |
 | Breakdown | `measure().nodes`, classified per node |
-| Tool definitions | `toolsTokens` from the `ctx.sessionProjections` unit `contextBreakdown` |
+| Tool definitions | `toolsTokens` from the `ctx.sessionProjections` unit `contextBreakdown`, minus the MCP share |
+| MCP | tool results produced by `mcp__*` tools (node pricing), plus the MCP share of the tool definitions above, allocated by declared schema size |
 | Unaccounted | the table's denominator (the measured pressure) minus everything itemized above it |
 | Largest nodes | `measure().nodes` sorted by tokens; tool results are named from the matching `tool/call` event |
 | Compaction trigger | `min(W * ratio, W - maxTokens - headroom)`, using the compaction backend's own policy when it is reachable, otherwise the `compaction-basic` defaults and the row is labelled `(default policy)` |
@@ -149,6 +151,10 @@ metadata ships in both languages via `locale/en.json` and `locale/zh.json`.
   `toolsTokens` from the `contextBreakdown` projection (the harness's own tool-schema
   pricing) rather than a per-message route price. When that projection is unavailable the
   row is omitted rather than estimated separately, and its share moves into `Unaccounted`.
+- **The definitions part of `MCP` is allocated, not measured.** Tool schemas are only known as
+  one `toolsTokens` total, so the MCP share of it is split by declared schema size; the MCP
+  *results* part is real per-node pricing. When a session sends no `mcp__*` tool the row is
+  absent.
 - **`Compaction trigger` is labelled `(default policy)` unless the backend's own policy was
   reachable.** Either way it does not assert that automatic compaction is enabled in your
   composition; with no compaction backend reachable the line is omitted entirely.
