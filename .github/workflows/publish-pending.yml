@@ -1,77 +1,155 @@
-name: Publish when a version bump is pending
+name: Release pending commits
 
-# Releases are batched: a normal change lands as test + version bump + CHANGELOG + commit, and this
-# workflow (not the developer's machine) does the npm publish. Running here means a release still
-# happens while the developer's computer is off.
+# Releases are batched and the version is decided at release time, not per change:
+#   - day to day you only commit (tests + commit, no version bump, no CHANGELOG edit)
+#   - this workflow runs every 4 hours, and when there are commits after the last release tag it
+#     bumps the patch version, writes a CHANGELOG section from those commit subjects, commits that,
+#     publishes to npm, and tags the released commit.
+# Running here (not on the author's machine) means a release still happens while their computer is off.
 on:
   schedule:
     - cron: '0 */4 * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Do everything except npm publish and the tag push
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release-pending
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      # Only publish when package.json is ahead of npm's latest; otherwise exit quietly.
-      - name: Is there anything to publish?
+      - name: Is there anything to release?
         id: gate
         run: |
-          pkg="$(node -p "require('./package.json').name")"
-          local="$(node -p "require('./package.json').version")"
-          latest="$(npm view "$pkg" version 2>/dev/null || echo 0.0.0)"
-          echo "package=$pkg local=$local latest=$latest"
-          if node -e '
-            const cmp = (x, y) => {
-              const a = x.split("-")[0].split(".").map(Number)
-              const b = y.split("-")[0].split(".").map(Number)
-              for (let i = 0; i < 3; i += 1) {
-                const p = a[i] || 0
-                const q = b[i] || 0
-                if (p !== q) return p > q ? 1 : -1
-              }
-              return 0
-            }
-            process.exit(cmp(process.argv[1], process.argv[2]) > 0 ? 0 : 1)
-          ' "$local" "$latest"; then
+          set -euo pipefail
+          last="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -n "$last" ]; then
+            count="$(git rev-list --count "$last"..HEAD)"
+            echo "last release tag: $last"
+          else
+            count="$(git rev-list --count HEAD)"
+            echo "no release tag yet"
+          fi
+          echo "commits since last release: $count"
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then
             echo "pending=true" >> "$GITHUB_OUTPUT"
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
-            echo "没有待发布版本，跳过"
+            echo "没有待发布的提交，跳过"
           fi
 
-      - name: Syntax check and tests
+      - name: Bump version and write the CHANGELOG section
+        if: steps.gate.outputs.pending == 'true'
+        id: bump
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs')
+          const pkgPath = 'package.json'
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+          const [major, minor, patch] = pkg.version.split('-')[0].split('.').map(Number)
+          const next = `${major}.${minor}.${patch + 1}`
+          pkg.version = next
+          fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
+          fs.writeFileSync('.next-version', next)
+          console.log('bumped to', next)
+          NODE
+          version="$(cat .next-version)"
+          rm -f .next-version
+          last="${{ steps.gate.outputs.last }}"
+          if [ -n "$last" ]; then range="$last..HEAD"; else range="HEAD"; fi
+          {
+            printf '# Changelog\n\n## %s — %s\n\n' "$version" "$(date -u +%Y-%m-%d)"
+            git log --no-merges --pretty='- %s' $range
+            printf '\n'
+            if [ -f CHANGELOG.md ]; then tail -n +2 CHANGELOG.md; fi
+          } > CHANGELOG.tmp
+          mv CHANGELOG.tmp CHANGELOG.md
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          head -n 12 CHANGELOG.md
+
+      - name: Syntax check
         if: steps.gate.outputs.pending == 'true'
         run: |
           node --check index.js
           node --check client.js
-          node test/report.test.mjs
 
-      - name: Publish
+      - name: Commit the release
         if: steps.gate.outputs.pending == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json CHANGELOG.md
+          git commit -m "release: v${{ steps.bump.outputs.version }}"
+          git push
+          echo "released commit: $(git rev-parse --short HEAD)"
+
+      - name: Publish to npm
+        if: steps.gate.outputs.pending == 'true' && inputs.dry_run != true
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Wait for the registry to serve the new version
-        if: steps.gate.outputs.pending == 'true'
+      - name: Tag the released commit
+        if: steps.gate.outputs.pending == 'true' && inputs.dry_run != true
         run: |
-          pkg="$(node -p "require('./package.json').name")"
-          local="$(node -p "require('./package.json').version")"
+          set -euo pipefail
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
+
+      # A GitHub Release is the notification channel: one email per real publish, and none for the
+      # every-4-hours runs that find nothing to do. It also gives the version a readable changelog page.
+      - name: Publish the release notes
+        if: steps.gate.outputs.pending == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.bump.outputs.version }}"
+          node - <<'NODE'
+          const fs = require('fs')
+          const text = fs.readFileSync('CHANGELOG.md', 'utf8')
+          const start = text.indexOf('\n## ')
+          const rest = text.slice(start + 1)
+          const next = rest.indexOf('\n## ', 1)
+          fs.writeFileSync('release-notes.md', next === -1 ? rest : rest.slice(0, next))
+          NODE
+          gh release create "v${version}" \
+            --title "v${version}" \
+            --notes-file release-notes.md \
+            --verify-tag || gh release edit "v${version}" --notes-file release-notes.md
+      - name: Wait for the registry to serve the new version
+        if: steps.gate.outputs.pending == 'true' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          version="${{ steps.bump.outputs.version }}"
           for attempt in $(seq 1 10); do
             sleep 20
-            live="$(npm view "$pkg" version)"
+            name="$(node -p "require('./package.json').name")"
+          live="$(npm view "$name" version)"
             echo "attempt=$attempt registry=$live"
-            if [ "$live" = "$local" ]; then exit 0; fi
+            if [ "$live" = "$version" ]; then exit 0; fi
           done
           echo "published but the registry still serves an older version"
           exit 1
