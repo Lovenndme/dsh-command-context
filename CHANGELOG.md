@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-11-02
+
+### Fixed
+
+- `Compaction trigger` went missing even in a composition whose preset does mount
+  compaction. The lookup now also tries `agentPresets.serviceFor(agent, 'compaction')`,
+  the supported way to reach an agent-scope service from outside that agent, before giving
+  up and omitting the row.
+
 ## [0.4.2] - 2026-11-02
 
 ### Fixed

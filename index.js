@@ -323,21 +323,36 @@ const NODE_LABELS = {
 }
 
 /**
- * 找压实后端：先看本插件所在上下文，再看调用方 agent 自己的作用域。
- * 本 profile 的宿主层 `compaction-basic` 是关的、只在预设里挂，所以两处都要探。
+ * 找压实后端。压实后端通常挂在 agent 作用域（宿主层往往是关的），所以要依次试：
+ *   1. 本插件所在上下文 `ctx.get('compaction')`
+ *   2. `agentPresets.serviceFor(agent, 'compaction')` —— 专为「从会话外拿某个 agent
+ *      作用域里的服务」设计的入口
+ *   3. `agent.ctx.get('compaction')` —— 运行期 agent 对象带 ctx 时的直取
+ *
+ * 三条都拿不到就返回 undefined，报告里对应的行整行不出现：不报一个不存在的阈值。
  */
 function resolveCompaction(ctx, agent) {
+  const attempts = []
+
   if (typeof ctx.get === 'function') {
-    const direct = ctx.get('compaction')
-    if (direct) return direct
+    attempts.push(() => ctx.get('compaction'))
+    const presets = ctx.get('agentPresets')
+    if (presets && typeof presets.serviceFor === 'function') {
+      attempts.push(() => presets.serviceFor(agent, 'compaction'))
+    }
   }
+
   const agentCtx = agent && typeof agent === 'object' ? agent.ctx : undefined
   if (agentCtx && typeof agentCtx.get === 'function') {
+    attempts.push(() => agentCtx.get('compaction'))
+  }
+
+  for (const attempt of attempts) {
     try {
-      const scoped = agentCtx.get('compaction')
-      if (scoped) return scoped
+      const service = attempt()
+      if (service) return service
     } catch {
-      // agent 作用域不可达：当作没有压实后端
+      // 这条路径不可达，试下一条
     }
   }
   return undefined
