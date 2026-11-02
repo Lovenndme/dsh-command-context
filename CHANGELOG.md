@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.5 — 2026-11-02
+
+- feat: split MCP usage into its own category
+
+
 ## 0.4.4 — 2026-11-02
 
 - ci: batch releases on a schedule, bump at publish time, and notify through a GitHub release

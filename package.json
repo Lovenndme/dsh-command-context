@@ -1,6 +1,6 @@
 {
   "name": "dsh-command-context",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "A /context slash command for DeepSeek Harness: shows how much of the current session's context window is used, how much is free, and a per-category breakdown of what fills it.",
   "type": "module",
   "main": "./index.js",
