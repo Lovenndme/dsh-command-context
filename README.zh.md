@@ -8,20 +8,35 @@
 
 ```
 Context: deepseek-v4.1-flash (myapi)
-[#####---------------]  253.3k / 1.00M tokens (25.3%)  measured
-Free space: 746.7k tokens (74.7%)
+[##########----------]  500.0k / 1.00M tokens (50.0%)  measured
+Free space: 500.0k tokens (50.0%)
 
-By category (sum 218.5k tokens)
-  System prompt        2.1k  (1.0%)
-  Memory files       369.0  (0.2%)
-  Skills               1.1k  (0.5%)
-  User messages        7.9k  (3.6%)
-  Assistant replies   39.1k  (17.9%)
-  Tool results        69.5k  (31.8%)
-  Tool definitions    98.4k  (45.0%)
+By category (of 500.0k tokens)
+  System prompt        4.0k  (0.8%)
+  Memory files         1.0k  (0.2%)
+  Skills               3.0k  (0.6%)
+  Injected context     1.0k  (0.2%)
+  User messages       30.0k  (6.0%)
+  Assistant replies  160.0k  (32.0%)
+  Tool results       101.0k  (20.2%)
+  Tool definitions   100.0k  (20.0%)
+  Unaccounted        100.0k  (20.0%)
 
-Compaction trigger: ~800.0k tokens (80.0%), 546.7k headroom
+Compaction trigger (default policy): ~800.0k tokens (80.0%), 300.0k headroom
 ```
+
+`/context top [N]` 会额外列出最大的几个表面节点——「上下文到底被谁吃了」：
+
+```
+Largest nodes
+  read            41.6k  turn 4
+  pwsh            22.8k  turn 7
+  assistant       18.4k  turn 9
+  grep            12.0k  turn 2
+  user             8.1k  turn 5
+```
+
+工具结果用产生它的工具名标注（从 `tool/call` 解析），一眼能看出是不是某一个输出吃掉了上下文。`N` 默认 5，上限 20。
 
 （示意数据。`measured` 表示主数字来自可复用的 provider 实测用量，`estimated` 表示回落到字符启发式。）
 
@@ -69,9 +84,13 @@ dsh plugin --profile <profile> add dsh-command-context
 | 已用 / 总占用 | `ctx.tokenMeter.measure(session).totalTokens`（回放会话日志折叠，无模型调用） |
 | 上下文上限 | `session.requestContext().contextWindow`（`request/context` 事件） |
 | 剩余空间 | 上限 − 总占用 |
-| 分类明细 | `measure().nodes` 逐个按节点归类，合计是 `surfaceTokens`（= 各节点之和）加上有值时的 `Tool definitions` |
+| 分类明细 | `measure().nodes` 逐个按节点归类 |
 | 工具定义 | `ctx.sessionProjections` 的 `contextBreakdown` 投影里的 `toolsTokens` |
-| 压缩触发点 | `min(W × 0.8, W − maxTokens − 65536)`，即 `compaction-basic` 的默认策略 |
+| Unaccounted | 表头那个分母（实测压力）减去上面所有已归类的行 |
+| Largest nodes | `measure().nodes` 按 token 降序；工具结果用对应 `tool/call` 事件里的工具名标注 |
+| 压缩触发点 | `min(W × ratio, W − maxTokens − headroom)`：能读到压实后端自己的策略就用真实的，读不到才用 `compaction-basic` 默认值并标注 `(default policy)` |
+
+所有行共用**一个分母**（实测压力），所以整张表永远加得到表头那个数；两套估算解释不掉的差额落到 `Unaccounted`，而不是留给读者自己去减。
 
 占用率口径照 `@deepseek-ai/dsh-token-meter` README 的原话：**实测压力 ÷ 该路由的模型上下文容量**。
 
@@ -87,9 +106,9 @@ dsh plugin --profile <profile> add dsh-command-context
 
 ## 已知限制
 
-- **是估算，不是账单。** 只有 `measured` 时主数字才是实测；分类明细始终是各消息的路由定价，与主数字不同源、不会相等——`By message type` 那行给出节点合计，便于对照。
-- **`Tool definitions` 和上面几行的估算口径不同**：它取的是 `contextBreakdown` 投影里的 `toolsTokens`（harness 自己对 tool schema 的 4 字符/token 计价），不是逐消息的路由定价。读不到这个投影时这一行不显示，而不是另估一个数——那时合计也会回落到节点合计。
-- **`Compaction trigger` 只陈述默认策略下的触发点**，不代表你的组合里自动压缩已启用。
+- **是估算，不是账单。** 只有 `measured` 时主数字才是实测；分类明细是路由定价/启发式，与主数字不同源——`Unaccounted` 就是这段差额，它不是一个类别，也不是算错了。主数字本身是启发式时（拿不到可复用的 provider 用量），整张表正好加平，`Unaccounted` 会消失。
+- **`Tool definitions` 和上面几行的估算口径不同**：它取的是 `contextBreakdown` 投影里的 `toolsTokens`（harness 自己对 tool schema 的计价），不是逐消息的路由定价。读不到这个投影时这一行不显示，那部分占比会落进 `Unaccounted`。
+- **`Compaction trigger` 读不到压实后端自己的策略时会标注 `(default policy)`**；两种情况都不代表你的组合里自动压缩已启用——完全找不到压实后端时，这一行整行不显示。
 - **没有上限就不给比例**：会话还没有 `request/context` 记录时，只报已用量并明确说明无法换算。
 - 只覆盖当前会话，不含子代理会话。
 

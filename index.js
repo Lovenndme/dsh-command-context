@@ -59,11 +59,15 @@ function stampLoad() {
   }
 }
 
-const USAGE = 'Usage: /context (no arguments)'
+const USAGE = 'Usage: /context [top [N]]'
 
-/** compaction-basic 的默认策略常量，只用于压缩触发点这一行。 */
+/** compaction-basic 的默认策略常量：读不到真实策略时才用，并在行上标注。 */
 const DEFAULT_THRESHOLD_RATIO = 0.8
 const DEFAULT_HEADROOM_TOKENS = 65536
+
+/** `/context top` 的默认条数与上限。 */
+const DEFAULT_TOP_COUNT = 5
+const MAX_TOP_COUNT = 20
 
 /** 进度条内部格数（ASCII，不含两端的方括号）。 */
 const BAR_CELLS = 20
@@ -219,9 +223,12 @@ export function buildReport(session, measurement, options = {}) {
   }
 
   // ── 分类明细 ────────────────────────────────────────────────────────
-  // 节点合计就是 surfaceTokens（token-meter 的契约）；工具定义不是表面节点，
-  // 单独取 token-meter 的 contextBreakdown.toolsTokens。有它时分母改成
-  // 「节点合计 + 工具定义」，整张表仍然只用一个分母。
+  // 节点合计是 surfaceTokens（token-meter 的契约）；工具定义不是表面节点，
+  // 单独取 token-meter 的 contextBreakdown.toolsTokens。
+  //
+  // 整张表只用一个分母：**provider 侧的总压力**。两套口径（实测压力 vs 逐消息
+  // 路由定价）解释不掉的差额，落到 Unaccounted 行里如实暴露，而不是让读者自己
+  // 去减——那样每个人算出来的都不一样，也没人知道差的是什么。
   const totals = summariseNodes(session, measurement.nodes)
   const rows = CATEGORY_ORDER.filter((key) => (totals.get(key) ?? 0) > 0).map((key) => ({
     label: CATEGORY_LABELS[key],
@@ -233,12 +240,16 @@ export function buildReport(session, measurement, options = {}) {
   if (toolsTokens > 0) rows.push({ label: 'Tool definitions', tokens: toolsTokens })
 
   if (rows.length > 0) {
-    const denominator = surface + toolsTokens
-    const share = denominator > 0 ? denominator : 1
+    const itemized = rows.reduce((sum, row) => sum + row.tokens, 0)
+    const denominator = Math.max(pressure, itemized)
+    const unaccounted = denominator - itemized
+    if (unaccounted > 0) rows.push({ label: 'Unaccounted', tokens: unaccounted })
+
     lines.push('')
-    lines.push(`By category (sum ${formatTokens(denominator)} tokens)`)
+    lines.push(`By category (of ${formatTokens(denominator)} tokens)`)
     const labelWidth = Math.max(...rows.map((row) => row.label.length))
     const tokenWidth = Math.max(...rows.map((row) => formatTokens(row.tokens).length))
+    const share = denominator > 0 ? denominator : 1
     for (const row of rows) {
       lines.push(
         `  ${row.label.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(tokenWidth)}  (${formatPercent(row.tokens / share)})`,
@@ -247,21 +258,32 @@ export function buildReport(session, measurement, options = {}) {
   }
 
   // ── 压缩触发点（参考行）──────────────────────────────────────────────
-  // 说的是「按 compaction-basic 默认策略，压力到哪里会触发压缩」，
-  // 不断言「你的自动压缩已启用」——后端是否挂载、preset 是否改过策略都不由这里断言。
+  // 只有真的找得到压实后端时才谈阈值：读得到它的策略就用真实的，读不到才回落到
+  // 默认值并在行上标 (default policy)。没有后端就不显示——不报一个不存在的阈值。
   const outputCap = header?.config?.maxTokens ?? 0
-  if (capacity) {
+  if (capacity && options.compaction) {
+    const policy = options.compactionPolicy ?? {}
+    const usesDefaults =
+      !Number.isFinite(policy.thresholdRatio) || !Number.isFinite(policy.headroomTokens)
+    const ratioTarget = Number.isFinite(policy.thresholdRatio)
+      ? policy.thresholdRatio
+      : DEFAULT_THRESHOLD_RATIO
+    const headroomTokens = Number.isFinite(policy.headroomTokens)
+      ? policy.headroomTokens
+      : DEFAULT_HEADROOM_TOKENS
+
     const trigger = Math.min(
-      Math.floor(capacity * DEFAULT_THRESHOLD_RATIO),
-      capacity - outputCap - DEFAULT_HEADROOM_TOKENS,
+      Math.floor(capacity * ratioTarget),
+      capacity - outputCap - headroomTokens,
     )
     if (trigger > 0) {
+      const label = `Compaction trigger${usesDefaults ? ' (default policy)' : ''}`
       const headroom = trigger - pressure
       lines.push('')
       lines.push(
         headroom > 0
-          ? `Compaction trigger: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)}), ${formatTokens(headroom)} headroom`
-          : `Compaction trigger passed: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)})`,
+          ? `${label}: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)}), ${formatTokens(headroom)} headroom`
+          : `${label} passed: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)})`,
       )
     }
   }
@@ -292,9 +314,119 @@ function readToolsTokens(ctx, session) {
   }
 }
 
+/** 非工具节点在「最大节点」里的固定 ASCII 标签（不打印正文，正文常常是中文）。 */
+const NODE_LABELS = {
+  'system/message': 'system',
+  'developer/message': 'developer',
+  'user/message': 'user',
+  'assistant/message': 'assistant',
+}
+
+/**
+ * 找压实后端：先看本插件所在上下文，再看调用方 agent 自己的作用域。
+ * 本 profile 的宿主层 `compaction-basic` 是关的、只在预设里挂，所以两处都要探。
+ */
+function resolveCompaction(ctx, agent) {
+  if (typeof ctx.get === 'function') {
+    const direct = ctx.get('compaction')
+    if (direct) return direct
+  }
+  const agentCtx = agent && typeof agent === 'object' ? agent.ctx : undefined
+  if (agentCtx && typeof agentCtx.get === 'function') {
+    try {
+      const scoped = agentCtx.get('compaction')
+      if (scoped) return scoped
+    } catch {
+      // agent 作用域不可达：当作没有压实后端
+    }
+  }
+  return undefined
+}
+
+/** 读压实后端暴露的策略字段；读不到就返回空对象，由调用方回落到默认值并标注。 */
+function readCompactionPolicy(service) {
+  if (!service || typeof service !== 'object') return {}
+  for (const candidate of [service.config, service.resolvedConfig, service.policy]) {
+    if (candidate && typeof candidate === 'object') return candidate
+  }
+  return {}
+}
+
+/**
+ * callId → 工具名。
+ *
+ * `tool/result` 只带 callId，工具名在对应的 `tool/call` 事件上，所以要扫一遍事件表。
+ * 人类命令是一次性的，这次扫描相对一次 `measure()` 可忽略。
+ */
+function collectToolNames(session) {
+  const names = new Map()
+  let events
+  try {
+    events = session.snapshotEvents()
+  } catch {
+    return names
+  }
+  for (const event of events) {
+    if (event?.type === 'tool/call' && typeof event.data?.name === 'string') {
+      names.set(event.data.callId, event.data.name)
+    }
+  }
+  return names
+}
+
+/**
+ * 最大的若干个表面节点——「我的上下文到底被谁吃了」。
+ *
+ * 工具结果标工具名（read / grep / pwsh …），其它节点标角色名。刻意不打印消息正文：
+ * 报告正文必须纯 ASCII，而用户与助手的正文常常是中文，塞进等宽列会把对齐打散。
+ */
+function buildLargestNodes(session, nodes, limit) {
+  const toolNames = collectToolNames(session)
+  const top = [...nodes]
+    .filter((node) => Number.isFinite(node.tokens) && node.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, limit)
+
+  if (top.length === 0) return 'Largest nodes: none'
+
+  const rows = top.map((node) => {
+    const event = session.eventAt(node.seq)
+    const callId = event?.type === 'tool/result' ? event.data?.message?.source?.callId : undefined
+    const label = (callId !== undefined ? toolNames.get(callId) : undefined) ?? NODE_LABELS[event?.type] ?? 'node'
+    return { label, tokens: node.tokens, turn: event?.data?.turn }
+  })
+
+  const labelWidth = Math.max(...rows.map((row) => row.label.length))
+  const tokenWidth = Math.max(...rows.map((row) => formatTokens(row.tokens).length))
+  const lines = ['Largest nodes']
+  for (const row of rows) {
+    const turn = Number.isFinite(row.turn) ? `  turn ${row.turn}` : ''
+    lines.push(
+      `  ${row.label.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(tokenWidth)}${turn}`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 解析 `/context` 的参数。
+ * 空 → 只出报告；`top` / `top N` → 报告 + 最大节点。其它一律 undefined（回 Usage）。
+ */
+function parseRequest(rawInput) {
+  const parts = rawInput.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return { mode: 'report' }
+  if (parts[0] !== 'top') return undefined
+  if (parts.length > 2) return undefined
+
+  const limit = parts.length === 2 ? Number.parseInt(parts[1], 10) : DEFAULT_TOP_COUNT
+  if (!Number.isFinite(limit) || limit <= 0) return undefined
+  return { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT) }
+}
+
 /** 执行一次 `/context`：只读测量，永不改动会话。 */
 function executeContext(ctx, invocation) {
-  if (invocation.rawInput.trim().length > 0) return { kind: 'error', text: USAGE }
+  const request = parseRequest(invocation.rawInput)
+  if (!request) return { kind: 'error', text: USAGE }
 
   const session = ctx.sessions.get(invocation.agent.id)
   if (!session) {
@@ -309,9 +441,19 @@ function executeContext(ctx, invocation) {
     return { kind: 'error', text: `Could not measure context usage: ${detail}` }
   }
 
+  const compaction = resolveCompaction(ctx, invocation.agent)
+  const report = buildReport(session, measurement, {
+    toolsTokens: readToolsTokens(ctx, session),
+    compaction,
+    compactionPolicy: readCompactionPolicy(compaction),
+  })
+
   return {
     kind: 'success',
-    text: buildReport(session, measurement, { toolsTokens: readToolsTokens(ctx, session) }),
+    text:
+      request.mode === 'top'
+        ? `${report}\n\n${buildLargestNodes(session, measurement.nodes, request.limit)}`
+        : report,
   }
 }
 
