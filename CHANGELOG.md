@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-11-02
+
+### Fixed
+
+- Arguments now reach the command. The definition declares an `input` descriptor, which the
+  composer requires before it hands a line with arguments to the executor; without it
+  `/context 3` was sent to the model as a plain prompt and the command never ran, so
+  `top N` was unreachable from the UI even though the parser accepted it.
+
 ## [0.4.1] - 2026-11-02
 
 ### Changed

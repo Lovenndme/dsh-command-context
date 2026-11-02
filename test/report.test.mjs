@@ -190,6 +190,8 @@ function mountCommand({ toolsTokens } = {}) {
   apply(ctx)
   assert.equal(registered.length, 1, 'apply must register exactly one command')
   const definition = registered[0]
+  // 不声明 input，composer 会把带参数的调用当普通提示词发给模型，命令永远收不到 args。
+  assert.match(definition.input?.hint ?? '', /top/, 'the command must declare an input hint')
   return (rawInput) =>
     definition.handler({
       rawInput,

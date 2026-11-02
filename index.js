@@ -480,6 +480,9 @@ export function apply(ctx) {
       ctx.commands.register({
         name: 'context',
         description: '查看当前会话的上下文窗口占用',
+        // 必须声明 input：不声明的话，composer 会把 `/context 3` 当成普通提示词
+        // 发给模型，而不是交给命令执行器（实测踩到：args 永远为空，消息落进 user/message）。
+        input: { hint: '[top] [N]' },
         handler: (invocation) => executeContext(ctx, invocation),
       }),
     'command-context registration',
