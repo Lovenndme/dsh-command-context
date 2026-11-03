@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6 — 2026-11-03
+
+- feat: bilingual report, Chinese by default
+- ci: sync the marketplace entry description nightly, PR only when it drifts
+
+
 ## 0.4.5 — 2026-11-02
 
 - feat: split MCP usage into its own category
