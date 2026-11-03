@@ -1,0 +1,1 @@
+Adds a /context slash command to DeepSeek Harness: shows how much of the session context window is used, how much is free, and a per-category breakdown (system prompt, memory files, skills, messages, tool results). Read-only, local, no model calls.

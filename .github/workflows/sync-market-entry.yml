@@ -1,0 +1,80 @@
+name: Sync marketplace entry description
+
+# Keeps this plugin's catalog entry description equal to the canonical text in market/description.*.txt.
+# Deliberately not a version bump: the catalog fills the version from its own nightly npm probe (the entry
+# YAML has no version key), so the only thing that can go stale here is the description.
+#
+# Needs a PAT in secrets.MARKET_TOKEN (classic `repo` scope, or fine-grained with Contents + Pull requests
+# write on Lovenndme/awesome-dsh-plugin and on the fork): GITHUB_TOKEN cannot open PRs in another repository.
+on:
+  schedule:
+    - cron: '20 19 * * *' # 03:20 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-market-entry
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Compare the entry with the canonical description
+        id: check
+        env:
+          MARKET_TOKEN: ${{ secrets.MARKET_TOKEN }}
+        run: node tools/sync-market-entry.mjs --check
+
+      - name: Nothing changed
+        if: steps.check.outputs.changed != 'true'
+        run: echo "market entry already matches market/description.*.txt — no PR"
+
+      - name: Build the updated entry
+        if: steps.check.outputs.changed == 'true'
+        env:
+          MARKET_TOKEN: ${{ secrets.MARKET_TOKEN }}
+        run: node tools/sync-market-entry.mjs --write "$RUNNER_TEMP/entry.yml"
+
+      - name: Push the branch to the fork and open or refresh the PR
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.MARKET_TOKEN }}
+          MARKET_TOKEN: ${{ secrets.MARKET_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY##*/}"
+          entry="data/plugins/Lovenndme__${repo}.yml"
+          branch="market/${repo}-desc"
+
+          git config user.name 'market-sync[bot]'
+          git config user.email 'market-sync@users.noreply.github.com'
+          git checkout -B "$branch"
+          mkdir -p "$(dirname "$entry")"
+          cp "$RUNNER_TEMP/entry.yml" "$entry"
+          git add "$entry"
+          git commit -m "docs(${repo}): refresh the market description"
+          git remote add market "https://x-access-token:${MARKET_TOKEN}@github.com/Lovenndme/awesome-dsh-plugin.git"
+          git push --force market "$branch"
+
+          body="Syncs \`description.en\` / \`description.zh\` in \`${entry}\` with the text this plugin keeps in \`market/description.*.txt\`.
+
+          Only the description changes — the version shown on the site is filled in by the catalog's nightly npm probe, so it is not part of this diff."
+          if gh pr list --repo awesome-dsh-plugin/awesome-dsh-plugin --head "Lovenndme:${branch}" --state open --json number --jq '.[0].number' | grep -q .; then
+            number="$(gh pr list --repo awesome-dsh-plugin/awesome-dsh-plugin --head "Lovenndme:${branch}" --state open --json number --jq '.[0].number')"
+            gh pr comment "$number" --repo awesome-dsh-plugin/awesome-dsh-plugin --body "Pushed another refresh: $(date -u +%Y-%m-%dT%H:%MZ)"
+            echo "updated PR #$number"
+          else
+            gh pr create --repo awesome-dsh-plugin/awesome-dsh-plugin \
+              --head "Lovenndme:${branch}" --base main \
+              --title "docs(${repo}): refresh the market description" \
+              --body "$body"
+          fi
