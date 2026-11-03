@@ -59,8 +59,6 @@ function stampLoad() {
   }
 }
 
-const USAGE = 'Usage: /context [top] [N]'
-
 /** compaction-basic 的默认策略常量：读不到真实策略时才用，并在行上标注。 */
 const DEFAULT_THRESHOLD_RATIO = 0.8
 const DEFAULT_HEADROOM_TOKENS = 65536
@@ -94,6 +92,37 @@ function renderBar(ratio) {
   return `[${'#'.repeat(filled)}${'-'.repeat(BAR_CELLS - filled)}]`
 }
 
+/**
+ * 显示宽度：CJK / 全角按 2 格，其余按 1 格。
+ *
+ * 中文标签用 `padEnd` 按码元补齐会错位（「系统提示」4 个码元占 8 格），
+ * 所以列宽必须按显示宽度算。
+ */
+function displayWidth(text) {
+  let width = 0
+  for (const char of text) {
+    const code = char.codePointAt(0)
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6)
+    width += wide ? 2 : 1
+  }
+  return width
+}
+
+function padRight(text, width) {
+  return text + ' '.repeat(Math.max(0, width - displayWidth(text)))
+}
+
+function padLeft(text, width) {
+  return ' '.repeat(Math.max(0, width - displayWidth(text))) + text
+}
+
 /* ------------------------------------------------------------------ 分类 */
 
 /**
@@ -111,15 +140,85 @@ const CATEGORY_ORDER = [
   'unclassified',
 ]
 
-const CATEGORY_LABELS = {
-  system: 'System prompt',
-  memory: 'Memory files',
-  skills: 'Skills',
-  injected: 'Injected context',
-  user: 'User messages',
-  assistant: 'Assistant replies',
-  tool: 'Tool results',
-  unclassified: 'Unclassified nodes',
+/**
+ * 两套语言。中文是默认（列宽用显示宽度补齐，CJK 记 2 格）；`/context en` 切英文。
+ *
+ * 为什么还要保留英文：这个包是发到 npm 的，社区默认看得懂英文；而本机界面是中文，
+ * 中文版读起来更省事——两边都留，不用二选一。
+ */
+const LANGS = {
+  zh: {
+    title: '上下文占用',
+    freeSpace: '剩余空间',
+    byCategory: (total) => `按类别（合计 ${total} tokens）`,
+    toolDefinitions: '工具定义',
+    mcp: 'MCP',
+    unaccounted: '未计入差额',
+    compaction: '压缩触发点',
+    compactionDefault: '压缩触发点（默认策略）',
+    compactionPassed: '已越过压缩触发点',
+    compactionPassedDefault: '已越过压缩触发点（默认策略）',
+    headroom: '余量',
+    largest: '最大节点',
+    largestNone: '最大节点：无',
+    used: '已用',
+    unknownWindow: '上下文上限未知：本会话还没有 request/context 记录，无法换算占用比例。',
+    measured: '实测',
+    estimated: '估算',
+    turn: (n) => `第 ${n} 轮`,
+    usage: '用法：/context [top] [N] [zh|en]',
+    noSession: '本会话未载入内存，无法测量。',
+    measureFailed: '无法测量上下文占用：',
+    labels: {
+      system: '系统提示',
+      memory: '记忆文件',
+      skills: '技能',
+      injected: '注入上下文',
+      user: '用户消息',
+      assistant: '助手回复',
+      tool: '工具结果',
+      unclassified: '未归类节点',
+    },
+  },
+  en: {
+    title: 'Context',
+    freeSpace: 'Free space',
+    byCategory: (total) => `By category (of ${total} tokens)`,
+    toolDefinitions: 'Tool definitions',
+    mcp: 'MCP',
+    unaccounted: 'Unaccounted',
+    compaction: 'Compaction trigger',
+    compactionDefault: 'Compaction trigger (default policy)',
+    compactionPassed: 'Compaction trigger passed',
+    compactionPassedDefault: 'Compaction trigger (default policy) passed',
+    headroom: 'headroom',
+    largest: 'Largest nodes',
+    largestNone: 'Largest nodes: none',
+    used: 'used',
+    unknownWindow: 'Context window unknown: this session has no request/context record yet.',
+    measured: 'measured',
+    estimated: 'estimated',
+    turn: (n) => `turn ${n}`,
+    usage: 'Usage: /context [top] [N] [zh|en]',
+    noSession: 'This session is not loaded in memory, so it cannot be measured.',
+    measureFailed: 'Could not measure context usage: ',
+    labels: {
+      system: 'System prompt',
+      memory: 'Memory files',
+      skills: 'Skills',
+      injected: 'Injected context',
+      user: 'User messages',
+      assistant: 'Assistant replies',
+      tool: 'Tool results',
+      unclassified: 'Unclassified nodes',
+    },
+  },
+}
+
+const DEFAULT_LANG = 'zh'
+
+function langTable(lang) {
+  return LANGS[lang] ?? LANGS[DEFAULT_LANG]
 }
 
 /**
@@ -251,13 +350,14 @@ export function buildReport(session, measurement, options = {}) {
 
   const pressure = measurement.totalTokens
   const surface = measurement.surfaceTokens
+  const L = langTable(options.lang)
   // 主数字的可信度标签：provider 实测 vs 字符启发式。
-  const accuracy = measurement.baseline.kind === 'usage' ? 'measured' : 'estimated'
+  const accuracy = measurement.baseline.kind === 'usage' ? L.measured : L.estimated
 
   const lines = []
 
   // ── 抬头：模型 + 占用条 ──────────────────────────────────────────────
-  lines.push(`Context: ${provider ? `${model} (${provider})` : model}`)
+  lines.push(`${L.title}: ${provider ? `${model} (${provider})` : model}`)
 
   const ratio = capacity ? pressure / capacity : NaN
   if (capacity) {
@@ -265,10 +365,10 @@ export function buildReport(session, measurement, options = {}) {
       `${renderBar(ratio)}  ${formatTokens(pressure)} / ${formatTokens(capacity)} tokens (${formatPercent(ratio)})  ${accuracy}`,
     )
     const free = Math.max(0, capacity - pressure)
-    lines.push(`Free space: ${formatTokens(free)} tokens (${formatPercent(free / capacity)})`)
+    lines.push(`${L.freeSpace}: ${formatTokens(free)} tokens (${formatPercent(free / capacity)})`)
   } else {
-    lines.push(`  used ${formatTokens(pressure)} tokens  ${accuracy}`)
-    lines.push('Context window unknown: this session has no request/context record yet.')
+    lines.push(`  ${L.used} ${formatTokens(pressure)} tokens  ${accuracy}`)
+    lines.push(L.unknownWindow)
   }
 
   // ── 分类明细 ────────────────────────────────────────────────────────
@@ -281,33 +381,33 @@ export function buildReport(session, measurement, options = {}) {
   const toolNames = collectToolNames(session)
   const totals = summariseNodes(session, measurement.nodes, toolNames)
   const rows = CATEGORY_ORDER.filter((key) => (totals.get(key) ?? 0) > 0).map((key) => ({
-    label: CATEGORY_LABELS[key],
+    label: L.labels[key],
     tokens: totals.get(key),
   }))
 
   const toolsTokens =
     Number.isFinite(options.toolsTokens) && options.toolsTokens > 0 ? options.toolsTokens : 0
   const toolSplit = splitToolDefinitions(session, toolsTokens)
-  if (toolSplit.rest > 0) rows.push({ label: 'Tool definitions', tokens: toolSplit.rest })
+  if (toolSplit.rest > 0) rows.push({ label: L.toolDefinitions, tokens: toolSplit.rest })
 
   // MCP 单独一类：它的工具结果（按节点定价）+ 它在工具定义里占的那一份（按声明体积分摊）。
   const mcpTotal = (totals.get('mcp') ?? 0) + toolSplit.mcp
-  if (mcpTotal > 0) rows.push({ label: 'MCP', tokens: mcpTotal })
+  if (mcpTotal > 0) rows.push({ label: L.mcp, tokens: mcpTotal })
 
   if (rows.length > 0) {
     const itemized = rows.reduce((sum, row) => sum + row.tokens, 0)
     const denominator = Math.max(pressure, itemized)
     const unaccounted = denominator - itemized
-    if (unaccounted > 0) rows.push({ label: 'Unaccounted', tokens: unaccounted })
+    if (unaccounted > 0) rows.push({ label: L.unaccounted, tokens: unaccounted })
 
     lines.push('')
-    lines.push(`By category (of ${formatTokens(denominator)} tokens)`)
-    const labelWidth = Math.max(...rows.map((row) => row.label.length))
+    lines.push(L.byCategory(formatTokens(denominator)))
+    const labelWidth = Math.max(...rows.map((row) => displayWidth(row.label)))
     const tokenWidth = Math.max(...rows.map((row) => formatTokens(row.tokens).length))
     const share = denominator > 0 ? denominator : 1
     for (const row of rows) {
       lines.push(
-        `  ${row.label.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(tokenWidth)}  (${formatPercent(row.tokens / share)})`,
+        `  ${padRight(row.label, labelWidth)}  ${padLeft(formatTokens(row.tokens), tokenWidth)}  (${formatPercent(row.tokens / share)})`,
       )
     }
   }
@@ -332,13 +432,13 @@ export function buildReport(session, measurement, options = {}) {
       capacity - outputCap - headroomTokens,
     )
     if (trigger > 0) {
-      const label = `Compaction trigger${usesDefaults ? ' (default policy)' : ''}`
+      const label = usesDefaults ? L.compactionDefault : L.compaction
       const headroom = trigger - pressure
       lines.push('')
       lines.push(
         headroom > 0
-          ? `${label}: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)}), ${formatTokens(headroom)} headroom`
-          : `${label} passed: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)})`,
+          ? `${label}: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)}), ${formatTokens(headroom)} ${L.headroom}`
+          : `${usesDefaults ? L.compactionPassedDefault : L.compactionPassed}: ~${formatTokens(trigger)} tokens (${formatPercent(trigger / capacity)})`,
       )
     }
   }
@@ -450,14 +550,14 @@ function collectToolNames(session) {
  * 工具结果标工具名（read / grep / pwsh …），其它节点标角色名。刻意不打印消息正文：
  * 报告正文必须纯 ASCII，而用户与助手的正文常常是中文，塞进等宽列会把对齐打散。
  */
-function buildLargestNodes(session, nodes, limit) {
+function buildLargestNodes(session, nodes, limit, L) {
   const toolNames = collectToolNames(session)
   const top = [...nodes]
     .filter((node) => Number.isFinite(node.tokens) && node.tokens > 0)
     .sort((a, b) => b.tokens - a.tokens)
     .slice(0, limit)
 
-  if (top.length === 0) return 'Largest nodes: none'
+  if (top.length === 0) return L.largestNone
 
   const rows = top.map((node) => {
     const event = session.eventAt(node.seq)
@@ -466,13 +566,13 @@ function buildLargestNodes(session, nodes, limit) {
     return { label, tokens: node.tokens, turn: event?.data?.turn }
   })
 
-  const labelWidth = Math.max(...rows.map((row) => row.label.length))
+  const labelWidth = Math.max(...rows.map((row) => displayWidth(row.label)))
   const tokenWidth = Math.max(...rows.map((row) => formatTokens(row.tokens).length))
-  const lines = ['Largest nodes']
+  const lines = [L.largest]
   for (const row of rows) {
-    const turn = Number.isFinite(row.turn) ? `  turn ${row.turn}` : ''
+    const turn = Number.isFinite(row.turn) ? `  ${L.turn(row.turn)}` : ''
     lines.push(
-      `  ${row.label.padEnd(labelWidth)}  ${formatTokens(row.tokens).padStart(tokenWidth)}${turn}`,
+      `  ${padRight(row.label, labelWidth)}  ${padLeft(formatTokens(row.tokens), tokenWidth)}${turn}`,
     )
   }
   return lines.join('\n')
@@ -481,38 +581,51 @@ function buildLargestNodes(session, nodes, limit) {
 /**
  * 解析 `/context` 的参数。
  *
- *   空        → 只出报告
- *   `N`       → 报告 + 最大的 N 个节点（`top N` 的简写：`/context 3` 是人第一反应）
- *   `top`     → 报告 + 最大的 5 个节点
- *   `top N`   → 报告 + 最大的 N 个节点
+ *   `zh` / `en`  → 输出语言（可放在任意位置，默认 zh）
+ *   空           → 只出报告
+ *   `N`          → 报告 + 最大的 N 个节点（`top N` 的简写：`/context 3` 是人第一反应）
+ *   `top`        → 报告 + 最大的 5 个节点
+ *   `top N`      → 报告 + 最大的 N 个节点
  *
  * 其它一律 undefined（回 Usage）。数字必须是纯数字：`top 3x` 不该被 parseInt 吃掉尾巴。
  */
 function parseRequest(rawInput) {
   const parts = rawInput.trim().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return { mode: 'report' }
 
-  if (parts.length === 1 && /^\d+$/.test(parts[0])) {
-    const limit = Number.parseInt(parts[0], 10)
-    return limit > 0 ? { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT) } : undefined
+  let lang = DEFAULT_LANG
+  const rest = []
+  for (const part of parts) {
+    if (part === 'zh' || part === 'en') {
+      lang = part
+      continue
+    }
+    rest.push(part)
   }
 
-  if (parts[0] !== 'top') return undefined
-  if (parts.length > 2) return undefined
-  if (parts.length === 2 && !/^\d+$/.test(parts[1])) return undefined
+  if (rest.length === 0) return { mode: 'report', lang }
 
-  const limit = parts.length === 2 ? Number.parseInt(parts[1], 10) : DEFAULT_TOP_COUNT
-  return limit > 0 ? { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT) } : undefined
+  if (rest.length === 1 && /^\d+$/.test(rest[0])) {
+    const limit = Number.parseInt(rest[0], 10)
+    return limit > 0 ? { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT), lang } : undefined
+  }
+
+  if (rest[0] !== 'top') return undefined
+  if (rest.length > 2) return undefined
+  if (rest.length === 2 && !/^\d+$/.test(rest[1])) return undefined
+
+  const limit = rest.length === 2 ? Number.parseInt(rest[1], 10) : DEFAULT_TOP_COUNT
+  return limit > 0 ? { mode: 'top', limit: Math.min(limit, MAX_TOP_COUNT), lang } : undefined
 }
 
 /** 执行一次 `/context`：只读测量，永不改动会话。 */
 function executeContext(ctx, invocation) {
   const request = parseRequest(invocation.rawInput)
-  if (!request) return { kind: 'error', text: USAGE }
+  const L = langTable(request?.lang)
+  if (!request) return { kind: 'error', text: L.usage }
 
   const session = ctx.sessions.get(invocation.agent.id)
   if (!session) {
-    return { kind: 'error', text: 'This session is not loaded in memory, so it cannot be measured.' }
+    return { kind: 'error', text: L.noSession }
   }
 
   let measurement
@@ -520,11 +633,12 @@ function executeContext(ctx, invocation) {
     measurement = ctx.tokenMeter.measure(session)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return { kind: 'error', text: `Could not measure context usage: ${detail}` }
+    return { kind: 'error', text: `${L.measureFailed}${detail}` }
   }
 
   const compaction = resolveCompaction(ctx, invocation.agent)
   const report = buildReport(session, measurement, {
+    lang: request.lang,
     toolsTokens: readToolsTokens(ctx, session),
     compaction,
     compactionPolicy: readCompactionPolicy(compaction),
@@ -534,7 +648,7 @@ function executeContext(ctx, invocation) {
     kind: 'success',
     text:
       request.mode === 'top'
-        ? `${report}\n\n${buildLargestNodes(session, measurement.nodes, request.limit)}`
+        ? `${report}\n\n${buildLargestNodes(session, measurement.nodes, request.limit, L)}`
         : report,
   }
 }
@@ -552,7 +666,7 @@ export function apply(ctx) {
         description: '查看当前会话的上下文窗口占用',
         // 必须声明 input：不声明的话，composer 会把 `/context 3` 当成普通提示词
         // 发给模型，而不是交给命令执行器（实测踩到：args 永远为空，消息落进 user/message）。
-        input: { hint: '[top] [N]' },
+        input: { hint: '[top] [N] [zh|en]' },
         handler: (invocation) => executeContext(ctx, invocation),
       }),
     'command-context registration',

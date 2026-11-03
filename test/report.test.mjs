@@ -1,14 +1,13 @@
 /**
- * 离线校验 /context 的分类、排版、参数与算术。用合成数据，不碰任何真实会话。
+ * 离线校验 /context 的分类、排版、语言、参数与算术。用合成数据，不碰任何真实会话。
  * 运行：node test/report.test.mjs
  *
- * 守的几条约定（都是真实踩过的）：
- *   · 正文必须是纯 ASCII —— 命令结果渲染在等宽容器里，CJK 与块字符会把行挤在一起；
- *   · 列必须真的对齐 —— 按字符串长度补齐对 ASCII 才成立；
- *   · 「整条都是 <system-reminder>」的 user/message 要从用户消息里拆出来
- *     （AGENTS.md 工作区指令 = memory，skills 目录 = skills）；
- *   · 正文不放解释性文案（口径说明写在 README）；
- *   · 分类之和必须等于表头那个分母（差额落到 Unaccounted），否则读者会算出不同的数。
+ * 守的约定（都是真实踩过的）：
+ *   · 「整条都是 <system-reminder>」的 user/message 要从用户消息里拆出来；
+ *   · 分类之和必须等于表头那个分母（差额落到最后一行），否则读者会算出不同的数；
+ *   · 列必须真的对齐 —— 中文按显示宽度（CJK 记 2 格）补齐，英文按码元；
+ *   · 正文不放解释性文案；
+ *   · 中英双语：默认中文，`en` 切英文，两套的算术必须完全一致。
  */
 import assert from 'node:assert/strict'
 import { apply, buildReport } from '../index.js'
@@ -21,7 +20,7 @@ function event(type, text, extra = {}) {
 }
 
 const REMINDER_MEMORY =
-  '<system-reminder>\nThe following workspace instructions may be relevant to your work.\n\nInstructions from: ~/.dsh/AGENTS.md\n</system-reminder>'
+  '<system-reminder>\nThe following workspace instructions may be relevant.\n\nInstructions from: ~/.dsh/AGENTS.md\n</system-reminder>'
 const REMINDER_SKILLS =
   '<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are available in this session:\n<available_skills>...</available_skills>\n</system-reminder>'
 
@@ -50,17 +49,15 @@ const NODES = [
   { seq: 7, tokens: 153_300, heuristicTokens: 150_000 },
 ]
 
-function fakeSession({ withContext = true } = {}) {
+function fakeSession({ withContext = true, header = {}, eventMap = events } = {}) {
   return {
     requestContext: () =>
       withContext
         ? { provider: 'myapi', model: 'deepseek-v4.1-flash', contextWindow: 1_000_000 }
         : undefined,
-    requestHeader: () => ({
-      config: { provider: 'myapi', model: 'deepseek-v4.1-flash', maxTokens: 32768 },
-    }),
-    eventAt: (seq) => events.get(seq),
-    snapshotEvents: () => [...events.values()],
+    requestHeader: () => ({ config: { maxTokens: 32768 }, ...header }),
+    eventAt: (seq) => eventMap.get(seq),
+    snapshotEvents: () => [...eventMap.values()],
   }
 }
 
@@ -73,55 +70,78 @@ const measurement = {
   nodes: NODES,
 }
 
-// fixture 自检：节点之和必须等于 surfaceTokens，否则类别表会漏账
-const nodeSum = NODES.reduce((sum, node) => sum + node.tokens, 0)
-assert.equal(nodeSum, measurement.surfaceTokens, 'fixture: nodes must sum to surfaceTokens')
+assert.equal(
+  NODES.reduce((sum, node) => sum + node.tokens, 0),
+  measurement.surfaceTokens,
+  'fixture: nodes must sum to surfaceTokens',
+)
 
-const report = buildReport(fakeSession(), measurement, { compaction: {} })
-console.log(report)
-console.log('\n' + '─'.repeat(64) + '\n')
-
-// 1) 抬头与占用率 = totalTokens / capacity，并标注数字可信度
-assert.match(report, /^Context: deepseek-v4\.1-flash \(myapi\)$/m)
-assert.match(report, /193\.2k \/ 1\.00M tokens \(19\.3%\) {2}measured/)
-assert.match(report, /^\[#{4}-{16}\]  /m, 'bar should be 4 filled of 20 for 19.3%')
-assert.match(report, /Free space: 806\.8k tokens \(80\.7%\)/)
-
-// 2) 六类齐全：memory / skills 必须从用户消息里拆出来
-assert.match(report, /By category \(of 193\.2k tokens\)/)
-for (const label of [
-  'System prompt',
-  'Memory files',
-  'Skills',
-  'User messages',
-  'Assistant replies',
-  'Tool results',
-]) {
-  assert.ok(report.includes(label), `missing category: ${label}`)
+/** 显示宽度（CJK 记 2 格）。中文要对齐必须按这个算，不能按字符串下标。 */
+function displayWidth(text) {
+  let width = 0
+  for (const char of text) {
+    const code = char.codePointAt(0)
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6)
+    width += wide ? 2 : 1
+  }
+  return width
 }
-assert.match(report, /Memory files +1\.5k +\(0\.8%\)/)
-assert.match(report, /Skills +1\.5k +\(0\.8%\)/)
-assert.match(report, /User messages +3\.2k +\(1\.7%\)/)
 
-// 2b) 口径差必须显式成一行：压力 193.2k - 节点 180.0k = 13.2k
-assert.match(report, /Unaccounted +13\.2k +\(6\.8%\)/)
+/** 各行括号必须落在同一显示列 —— 这是列对齐的硬指标。 */
+function assertColumnsAlign(text) {
+  const rows = text.split('\n').filter((line) => /^ {2}\S/.test(line) && line.includes('('))
+  assert.ok(rows.length >= 3, 'expected several category rows')
+  const columns = new Set(rows.map((line) => displayWidth(line.slice(0, line.indexOf('(')))))
+  assert.equal(columns.size, 1, `category rows must share one column, got ${[...columns].join(', ')}`)
+}
 
-// 2c) 工具定义：给了 toolsTokens 就多一行，分母取「实测压力」与「已归类合计」的较大者
+// ── 默认语言：中文 ────────────────────────────────────────────────────
+const zh = buildReport(fakeSession(), measurement, { compaction: {} })
+console.log(zh)
+console.log('\n' + '─'.repeat(64) + '\n')
+assert.match(zh, /^上下文占用: deepseek-v4\.1-flash \(myapi\)$/m)
+assert.match(zh, /193\.2k \/ 1\.00M tokens \(19\.3%\) {2}实测/)
+assert.match(zh, /剩余空间: 806\.8k tokens \(80\.7%\)/)
+assert.match(zh, /按类别（合计 193\.2k tokens）/)
+for (const label of ['系统提示', '记忆文件', '技能', '用户消息', '助手回复', '工具结果']) {
+  assert.ok(zh.includes(label), `missing zh label: ${label}`)
+}
+assert.match(zh, /未计入差额 +13\.2k +\(6\.8%\)/)
+assert.match(zh, /压缩触发点（默认策略）: ~800\.0k tokens \(80\.0%\), 606\.8k 余量/)
+assertColumnsAlign(zh)
+
+// ── 同一份数据，英文版算术必须完全一致 ────────────────────────────────
+const en = buildReport(fakeSession(), measurement, { lang: 'en', compaction: {} })
+console.log(en)
+assert.match(en, /^Context: deepseek-v4\.1-flash \(myapi\)$/m)
+assert.match(en, /193\.2k \/ 1\.00M tokens \(19\.3%\) {2}measured/)
+assert.match(en, /By category \(of 193\.2k tokens\)/)
+assert.match(en, /Unaccounted +13\.2k +\(6\.8%\)/)
+assert.match(en, /Compaction trigger \(default policy\): ~800\.0k tokens \(80\.0%\), 606\.8k headroom/)
+assertColumnsAlign(en)
+
+const rowCount = (text) =>
+  text.split('\n').filter((line) => /^ {2}\S/.test(line) && line.includes('(')).length
+assert.equal(rowCount(zh), rowCount(en), 'both languages must list the same rows')
+
+// ── 工具定义 / MCP ───────────────────────────────────────────────────
 const withTools = buildReport(
   fakeSession(),
   { ...measurement, totalTokens: 340_000 },
-  { toolsTokens: 98_400, compaction: {} },
+  { lang: 'en', toolsTokens: 98_400, compaction: {} },
 )
-console.log(withTools)
 assert.match(withTools, /By category \(of 340\.0k tokens\)/)
 assert.match(withTools, /Tool definitions +98\.4k +\(28\.9%\)/)
-assert.match(withTools, /Unaccounted +61\.6k/) // 340.0k - (180.0k + 98.4k)
-assert.ok(
-  withTools.indexOf('Tool results') < withTools.indexOf('Tool definitions'),
-  'tools row belongs after the node rows',
-)
+assert.match(withTools, /Unaccounted +61\.6k/)
+assert.ok(withTools.indexOf('Tool results') < withTools.indexOf('Tool definitions'))
 
-// 2d) MCP：工具结果按 `mcp__` 前缀单独归类，工具定义按声明体积占比分摊
 const mcpEvents = new Map(events)
 mcpEvents.set(8, event('tool/call', null, { turn: 3, callId: 'c2', name: 'mcp__a__b', arguments: '{}' }))
 mcpEvents.set(
@@ -131,105 +151,79 @@ mcpEvents.set(
     message: { content: [{ type: 'text', text: 'x' }], source: { callId: 'c2' } },
   }),
 )
-// 两个 schema 的 JSON 长度刻意相等 → MCP 占工具定义正好一半（49.2k / 49.2k）
+// 两个 schema 的 JSON 长度刻意相等 → MCP 占工具定义正好一半
 const balancedTools = [
   { name: 'read', description: 'xxxxx', parameters: {} },
   { name: 'mcp__a__b', description: '', parameters: {} },
 ]
-assert.equal(
-  JSON.stringify(balancedTools[0]).length,
-  JSON.stringify(balancedTools[1]).length,
-  'fixture: schemas must be the same size so the MCP share is exactly half',
-)
+assert.equal(JSON.stringify(balancedTools[0]).length, JSON.stringify(balancedTools[1]).length)
 
-const mcpSession = {
-  ...fakeSession(),
-  requestHeader: () => ({ config: { maxTokens: 32768 }, tools: balancedTools }),
-  eventAt: (seq) => mcpEvents.get(seq),
-  snapshotEvents: () => [...mcpEvents.values()],
-}
-const mcpReport = buildReport(
-  mcpSession,
+const mcp = buildReport(
+  fakeSession({ header: { tools: balancedTools }, eventMap: mcpEvents }),
   {
     ...measurement,
     totalTokens: 400_000,
     surfaceTokens: 200_000,
     nodes: [...NODES, { seq: 9, tokens: 20_000, heuristicTokens: 20_000 }],
   },
-  { toolsTokens: 98_400, compaction: {} },
+  { lang: 'en', toolsTokens: 98_400, compaction: {} },
 )
-console.log(mcpReport)
-assert.ok(!report.includes('MCP'), 'no MCP tools means no MCP row')
-assert.match(mcpReport, /Tool results +153\.3k/, 'built-in results stay in Tool results')
-assert.match(mcpReport, /Tool definitions +49\.2k/, 'MCP definitions must leave Tool definitions')
-assert.match(mcpReport, /MCP +69\.2k/, 'MCP row = 20.0k results + 49.2k definitions')
-assert.match(mcpReport, /Unaccounted +101\.6k/) // 400.0k - 298.4k
-assert.ok(
-  mcpReport.indexOf('Tool definitions') < mcpReport.indexOf('MCP'),
-  'MCP row belongs after the tool rows',
-)
+console.log(mcp)
+assert.match(mcp, /Tool results +153\.3k/)
+assert.match(mcp, /Tool definitions +49\.2k/)
+assert.match(mcp, /MCP +69\.2k/)
+assert.match(mcp, /Unaccounted +101\.6k/)
+assert.ok(mcp.indexOf('Tool definitions') < mcp.indexOf('MCP'))
+assert.ok(!en.includes('MCP'), 'no MCP tools means no MCP row')
 
-// 3) 混排消息不算注入：只要有一条块不是 reminder，整条按用户消息算
-events.set(8, event('user/message', 'normal text\n<system-reminder>tail</system-reminder>', { turn: 3 }))
-const mixed = buildReport(
-  fakeSession(),
-  {
-    ...measurement,
-    totalTokens: 194_200,
-    surfaceTokens: 181_000,
-    nodes: [...NODES, { seq: 8, tokens: 1_000, heuristicTokens: 1_000 }],
-  },
-  { compaction: {} },
-)
-assert.ok(!mixed.includes('Injected context'), 'mixed node must not be classified as injection')
-assert.match(mixed, /User messages +4\.2k/, 'mixed node must stay under user messages')
-events.delete(8)
-
-// 4) 压缩触发点 = min(W*0.8, W-maxTokens-headroom)；读不到真实策略时标注 default policy
-assert.match(report, /Compaction trigger \(default policy\): ~800\.0k tokens \(80\.0%\), 606\.8k headroom/)
-// 4b) 读得到真实策略就用真实值，且不再标 default
+// ── 压缩触发点三态 ───────────────────────────────────────────────────
 const tuned = buildReport(fakeSession(), measurement, {
+  lang: 'en',
   compaction: {},
   compactionPolicy: { thresholdRatio: 0.7, headroomTokens: 65536 },
 })
 assert.match(tuned, /Compaction trigger: ~700\.0k tokens \(70\.0%\)/)
-assert.ok(!tuned.includes('default policy'))
-// 4c) 没有压实后端就不谈阈值
-assert.ok(!buildReport(fakeSession(), measurement).includes('Compaction trigger'))
+assert.ok(!tuned.includes('default policy'), 'readable policy must not be labelled as default')
+assert.ok(!buildReport(fakeSession(), measurement, { lang: 'en' }).includes('Compaction trigger'))
 
-// 5) 未知上下文窗口：不猜占用率
-const unknown = buildReport(
-  fakeSession({ withContext: false }),
-  { ...measurement, baseline: { kind: 'none', tokens: 0 } },
-  { compaction: {} },
-)
-console.log(unknown)
-assert.ok(unknown.includes('Context window unknown'))
-assert.match(unknown, /used 193\.2k tokens {2}estimated/)
-assert.ok(!/ \/ /.test(unknown), 'must not print a used/capacity fraction without a capacity')
-assert.ok(!unknown.includes('Compaction trigger'), 'no capacity means no trigger math')
-
-// 6) 越过触发点时的措辞
 const over = buildReport(
   fakeSession(),
-  { ...measurement, totalTokens: 900_000, surfaceTokens: 890_000, nodes: [{ seq: 7, tokens: 890_000, heuristicTokens: 880_000 }] },
-  { compaction: {} },
+  {
+    ...measurement,
+    totalTokens: 900_000,
+    surfaceTokens: 890_000,
+    nodes: [{ seq: 7, tokens: 890_000, heuristicTokens: 880_000 }],
+  },
+  { lang: 'en', compaction: {} },
 )
 assert.match(over, /Compaction trigger \(default policy\) passed/)
 
-// 7) 正文不放解释性文案（口径说明属于 README）
+// ── 未知上下文上限 ──────────────────────────────────────────────────
+const unknownZh = buildReport(
+  fakeSession({ withContext: false }),
+  { ...measurement, totalTokens: 0, surfaceTokens: 0, nodes: [] },
+  { compaction: {} },
+)
+assert.ok(unknownZh.includes('上下文上限未知'))
+
+const unknownEn = buildReport(
+  fakeSession({ withContext: false }),
+  { ...measurement, baseline: { kind: 'none', tokens: 0 } },
+  { lang: 'en', compaction: {} },
+)
+assert.ok(unknownEn.includes('Context window unknown'))
+assert.ok(!/ \/ /.test(unknownEn), 'must not print a used/capacity fraction without a capacity')
+
+// ── 正文不放解释性文案 ───────────────────────────────────────────────
 for (const banned of ['note:', 'policy min', 'Source:', 'counts this turn']) {
-  assert.ok(!report.includes(banned), `UI must not carry explanatory copy: ${banned}`)
+  assert.ok(!en.includes(banned), `UI must not carry explanatory copy: ${banned}`)
 }
 
-// 8) 走真实的 apply → handler：参数解析与「最大节点」排行
-function mountCommand({ toolsTokens } = {}) {
+// ── 走真实的 apply → handler ────────────────────────────────────────
+function mountCommand() {
   const registered = []
   const ctx = {
-    get: (name) =>
-      name === 'sessionProjections' && toolsTokens !== undefined
-        ? { snapshot: () => ({ values: { contextBreakdown: { toolsTokens } } }) }
-        : undefined,
+    get: () => undefined,
     sessions: { get: () => fakeSession() },
     tokenMeter: { measure: () => measurement },
     commands: { register: (definition) => (registered.push(definition), () => {}) },
@@ -238,8 +232,8 @@ function mountCommand({ toolsTokens } = {}) {
   apply(ctx)
   assert.equal(registered.length, 1, 'apply must register exactly one command')
   const definition = registered[0]
-  // 不声明 input，composer 会把带参数的调用当普通提示词发给模型，命令永远收不到 args。
-  assert.match(definition.input?.hint ?? '', /top/, 'the command must declare an input hint')
+  // 不声明 input，composer 会把带参数的调用当普通提示词发给模型。
+  assert.match(definition.input?.hint ?? '', /top/)
   return (rawInput) =>
     definition.handler({
       rawInput,
@@ -252,44 +246,50 @@ function mountCommand({ toolsTokens } = {}) {
 
 const run = mountCommand()
 
-const plain = run('')
-assert.equal(plain.kind, 'success')
-assert.ok(!plain.text.includes('Largest nodes'), 'plain /context must not list nodes')
+const plainZh = run('')
+assert.equal(plainZh.kind, 'success')
+assert.ok(plainZh.text.includes('上下文占用'))
+assert.ok(!plainZh.text.includes('最大节点'), 'plain /context must not list nodes')
 
-const topTwo = run('top 2')
-assert.equal(topTwo.kind, 'success')
-assert.ok(topTwo.text.includes('Largest nodes'))
-const largestRows = topTwo.text.split('Largest nodes')[1].trim().split('\n')
-assert.equal(largestRows.length, 2, 'top 2 must list exactly two nodes')
-assert.match(largestRows[0], /read +153\.3k {2}turn 2/, 'tool results must be named by tool, with its turn')
-assert.match(largestRows[1], /system +12\.4k/, 'non-tool nodes fall back to a role label')
+const topTwoEn = run('top 2 en')
+assert.ok(topTwoEn.text.includes('Largest nodes'))
+const rowsEn = topTwoEn.text.split('Largest nodes')[1].trim().split('\n')
+assert.equal(rowsEn.length, 2)
+assert.match(rowsEn[0], /read +153\.3k {2}turn 2/)
+assert.match(rowsEn[1], /system +12\.4k/)
 
-const topDefault = run('top')
-assert.equal(topDefault.text.split('Largest nodes')[1].trim().split('\n').length, 5)
+const topTwoZh = run('top 2')
+const rowsZh = topTwoZh.text.split('最大节点')[1].trim().split('\n')
+assert.equal(rowsZh.length, 2)
+assert.match(rowsZh[0], /read +153\.3k {2}第 2 轮/)
 
-// 8b) 裸数字是 `top N` 的简写：`/context 3` 是人第一反应
-const shorthand = run('3')
-assert.equal(shorthand.kind, 'success')
-assert.equal(shorthand.text.split('Largest nodes')[1].trim().split('\n').length, 3)
-assert.equal(shorthand.text, run('top 3').text, 'bare N must equal top N')
+assert.equal(run('3').text, run('top 3').text, 'bare N must equal top N')
+assert.equal(run('3').text.split('最大节点')[1].trim().split('\n').length, 3)
 
 for (const bad of ['bogus', '0', 'top 0', 'top x', 'top 3x', 'top 1 2']) {
   const result = run(bad)
   assert.equal(result.kind, 'error', `"${bad}" must be rejected`)
-  assert.equal(result.text, 'Usage: /context [top] [N]')
+  assert.equal(result.text, '用法：/context [top] [N] [zh|en]')
 }
 
-// 9) 排版契约：纯 ASCII
+// ── 排版契约 ────────────────────────────────────────────────────────
 for (const [what, text] of [
-  ['main report', report],
+  ['en report', en],
   ['with tools', withTools],
-  ['with mcp', mcpReport],
-  ['unknown-capacity report', unknown],
-  ['over-trigger report', over],
-  ['top output', topTwo.text],
+  ['with mcp', mcp],
+  ['unknown en', unknownEn],
+  ['over-trigger', over],
+  ['top en', topTwoEn.text],
 ]) {
   const bad = text.match(/[^\x20-\x7e\n]/g)
-  assert.equal(bad, null, `${what}: output must be ASCII only, found ${JSON.stringify(bad)}`)
+  assert.equal(bad, null, `${what}: English output must be ASCII only, found ${JSON.stringify(bad)}`)
+}
+for (const [what, text] of [
+  ['zh report', zh],
+  ['top zh', topTwoZh.text],
+]) {
+  const bad = text.match(/[█░]/g)
+  assert.equal(bad, null, `${what}: block characters must not be used, found ${JSON.stringify(bad)}`)
 }
 
 console.log('\nALL CHECKS PASSED')

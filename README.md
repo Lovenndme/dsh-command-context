@@ -46,6 +46,32 @@ single oversized output is visible at a glance. `N` defaults to 5 and is capped 
 Illustrative numbers. `measured` means the headline figure came from reusable provider
 usage; `estimated` means it fell back to the character heuristic.
 
+## Languages
+
+The report is bilingual and **Chinese is the default**; `/context en` switches to English
+(`/context zh` switches back). Both render identical numbers — only the wording changes:
+
+```
+上下文占用: deepseek-v4.1-flash (myapi)
+[##########----------]  497.5k / 1.00M tokens (49.8%)  实测
+剩余空间: 502.5k tokens (50.2%)
+
+按类别（合计 497.5k tokens）
+  系统提示      2.1k  (0.4%)
+  记忆文件       379  (0.1%)
+  技能          2.2k  (0.4%)
+  用户消息     28.3k  (5.7%)
+  助手回复    227.4k  (45.7%)
+  工具结果    135.3k  (27.2%)
+  工具定义     13.0k  (2.6%)
+  未计入差额   88.8k  (17.9%)
+
+压缩触发点（默认策略）: ~800.0k tokens (80.0%), 302.5k 余量
+```
+
+Column padding follows **display width** (a CJK glyph counts as two cells), so the numeric
+columns line up in either language.
+
 The card renders **expanded by default**. A command result normally lands in the generic
 collapsed card that needs a click to open; this plugin's client half takes over the keyed
 client slot `conversation.chat.commandview` for the `context` command only, so the report
@@ -127,18 +153,17 @@ The command is read-only: it never appends session events, never triggers a mode
 never mutates session state. Its lifecycle (`command/run`, `command/done`) is recorded by
 the command registry as log-only events.
 
-## Why the report body is ASCII-only English
+## Why the report avoids block characters
 
 A command result renders inside a `<pre>` with `white-space: pre-wrap` and a monospace font.
-Full-width CJK glyphs are wider than the assumed cell, and block characters such as `█░` are
-taller than the line box — both visually collide with the neighbouring lines in that
-container. ASCII has a constant width of one cell, so column alignment is exact: the meter
-uses `#`/`-`, labels are English, and brackets are half-width.
+Block characters such as `█░` are taller than the line box and visually collide with the
+neighbouring lines in that container, so the meter uses `#`/`-` instead. Column alignment is
+computed from display width rather than string length, which is what makes the Chinese labels
+line up with the numbers.
 
-Two languages are kept apart on purpose: the **report body is English** for the layout
-reason above, while the **command's description in the slash panel is Chinese**
-(`查看当前会话的上下文窗口占用`) to match built-in commands in a Chinese UI. Plugin Manager
-metadata ships in both languages via `locale/en.json` and `locale/zh.json`.
+The command's description in the slash panel is Chinese (`查看当前会话的上下文窗口占用`) to
+match built-in commands in a Chinese UI. Plugin Manager metadata ships in both languages via
+`locale/en.json` and `locale/zh.json`.
 
 ## Limitations
 
